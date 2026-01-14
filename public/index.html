@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GCP Artifact Registry</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+  <!-- Credentials Setup Screen -->
+  <div id="authScreen" class="auth-screen">
+    <div class="auth-container">
+      <div class="auth-logo">
+        <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path
+            d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z">
+          </path>
+          <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+          <line x1="12" y1="22.08" x2="12" y2="12"></line>
+        </svg>
+        <h1>GCP Artifact Registry</h1>
+      </div>
+
+      <div class="auth-card">
+        <h2>🔐 Configure Credentials</h2>
+        <p>Paste your GCP service account JSON credentials below. These are stored securely in your browser's local
+          storage and never sent to any third-party servers.</p>
+
+        <div class="auth-form">
+          <div class="form-group">
+            <label>Service Account JSON</label>
+            <textarea id="credentialsInput" placeholder='{
+  "type": "service_account",
+  "project_id": "your-project-id",
+  "private_key_id": "...",
+  "private_key": "-----BEGIN PRIVATE KEY-----...",
+  "client_email": "...",
+  ...
+}'></textarea>
+          </div>
+
+          <div id="authError" class="auth-error hidden"></div>
+
+          <button class="btn btn-primary btn-large" id="validateCredentials">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+              <polyline points="22 4 12 14.01 9 11.01"></polyline>
+            </svg>
+            Validate & Connect
+          </button>
+        </div>
+
+        <div class="auth-info">
+          <h4>🔒 Security Notice</h4>
+          <ul>
+            <li>Credentials are stored only in your browser's localStorage</li>
+            <li>Credentials are sent over HTTPS to GCP APIs only</li>
+            <li>No credentials are stored on the server</li>
+            <li>Clear your browser data to remove stored credentials</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main App (hidden until authenticated) -->
+  <div id="mainApp" class="app hidden">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">
+          <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path
+              d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z">
+            </path>
+            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+            <line x1="12" y1="22.08" x2="12" y2="12"></line>
+          </svg>
+          <span>Artifact Registry</span>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <a href="#" class="nav-item active" data-view="repositories">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+          </svg>
+          Repositories
+        </a>
+        <a href="#" class="nav-item" data-view="docker">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
+            <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
+          </svg>
+          Docker Images
+        </a>
+        <a href="#" class="nav-item" data-view="upload">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="17 8 12 3 7 8"></polyline>
+            <line x1="12" y1="3" x2="12" y2="15"></line>
+          </svg>
+          Upload
+        </a>
+        <a href="#" class="nav-item" data-view="download">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+          </svg>
+          Download
+        </a>
+        <a href="#" class="nav-item" data-view="settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path
+              d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
+            </path>
+          </svg>
+          Settings
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="project-info">
+          <div class="project-label">Project</div>
+          <div class="project-id" id="projectId">-</div>
+        </div>
+        <button class="btn btn-secondary btn-small" id="logoutBtn" style="margin-top: 12px; width: 100%;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            style="width: 16px; height: 16px;">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+            <polyline points="16 17 21 12 16 7"></polyline>
+            <line x1="21" y1="12" x2="9" y2="12"></line>
+          </svg>
+          Disconnect
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <!-- Header -->
+      <header class="header">
+        <div class="header-title">
+          <h1 id="pageTitle">Repositories</h1>
+          <p id="pageSubtitle">View and manage your artifact repositories</p>
+        </div>
+        <div class="header-actions">
+          <button class="btn btn-secondary" id="refreshBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="23 4 23 10 17 10"></polyline>
+              <polyline points="1 20 1 14 7 14"></polyline>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+            </svg>
+            Refresh
+          </button>
+        </div>
+      </header>
+
+      <!-- Content Area -->
+      <div class="content">
+        <!-- Repositories View -->
+        <div id="repositoriesView" class="view active">
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-icon blue">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                </svg>
+              </div>
+              <div class="stat-content">
+                <div class="stat-value" id="totalRepos">0</div>
+                <div class="stat-label">Total Repositories</div>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon purple">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
+                  <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
+                </svg>
+              </div>
+              <div class="stat-content">
+                <div class="stat-value" id="dockerRepos">0</div>
+                <div class="stat-label">Docker Repositories</div>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon green">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path
+                    d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z">
+                  </path>
+                </svg>
+              </div>
+              <div class="stat-content">
+                <div class="stat-value" id="otherRepos">0</div>
+                <div class="stat-label">Other Repositories</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="table-container">
+            <div class="table-header">
+              <h3>All Repositories</h3>
+              <div class="search-box">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <path d="m21 21-4.35-4.35"></path>
+                </svg>
+                <input type="text" id="repoSearch" placeholder="Search repositories...">
+              </div>
+            </div>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Format</th>
+                  <th>Location</th>
+                  <th>Description</th>
+                  <th>Created</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="repoTableBody">
+                <tr class="loading-row">
+                  <td colspan="6">
+                    <div class="loading-spinner"></div>
+                    <span>Loading repositories...</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Docker Images View -->
+        <div id="dockerView" class="view">
+          <div class="repo-selector">
+            <label>Select Repository:</label>
+            <select id="dockerRepoSelect">
+              <option value="">-- Select a Docker repository --</option>
+            </select>
+          </div>
+
+          <div class="table-container">
+            <div class="table-header">
+              <h3>Docker Images</h3>
+              <div class="search-box">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <path d="m21 21-4.35-4.35"></path>
+                </svg>
+                <input type="text" id="dockerSearch" placeholder="Search images...">
+              </div>
+            </div>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Image</th>
+                  <th>Tags</th>
+                  <th>Size</th>
+                  <th>Uploaded</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="dockerTableBody">
+                <tr class="empty-row">
+                  <td colspan="5">Select a repository to view Docker images</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Upload View - Docker Hub Browser -->
+        <div id="uploadView" class="view">
+          <!-- Popular Images Section -->
+          <div class="popular-images-section">
+            <h3>🔥 Popular Docker Images</h3>
+            <p class="section-subtitle">Click on any image to transfer it to your GCP Artifact Registry</p>
+            <div class="popular-grid" id="popularGrid">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+
+          <!-- Search Section -->
+          <div class="search-section">
+            <div class="search-header">
+              <h3>🔍 Search Docker Hub</h3>
+              <div class="search-input-large">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <path d="m21 21-4.35-4.35"></path>
+                </svg>
+                <input type="text" id="dockerHubSearch"
+                  placeholder="Search for images (e.g., keycloak, nginx, postgres...)">
+                <button class="btn btn-primary" id="searchDockerHub">Search</button>
+              </div>
+            </div>
+
+            <div id="searchResults" class="search-results hidden">
+              <div class="table-container">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Image</th>
+                      <th>Description</th>
+                      <th>Stars</th>
+                      <th>Official</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="searchResultsBody">
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- Transfer Modal Content (shown when image is selected) -->
+          <div id="transferSection" class="transfer-section hidden">
+            <div class="transfer-card">
+              <div class="transfer-header">
+                <h3>📦 Transfer Image to GCP</h3>
+                <button class="btn btn-secondary" id="cancelTransfer">← Back</button>
+              </div>
+
+              <div class="transfer-summary">
+                <div class="transfer-from">
+                  <span class="transfer-label">Source</span>
+                  <span class="transfer-value" id="transferSource">-</span>
+                </div>
+                <div class="transfer-arrow">→</div>
+                <div class="transfer-to">
+                  <span class="transfer-label">Destination</span>
+                  <span class="transfer-value" id="transferDest">-</span>
+                </div>
+              </div>
+
+              <div class="transfer-form">
+                <div class="form-row">
+                  <div class="form-group">
+                    <label>Target Repository</label>
+                    <select id="transferRepoSelect">
+                      <option value="">-- Select a Docker repository --</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label>Tag</label>
+                    <select id="transferTagSelect">
+                      <option value="">Loading tags...</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <label>Target Image Name (optional)</label>
+                  <input type="text" id="transferTargetName" placeholder="Leave empty to use original name">
+                </div>
+
+                <button class="btn btn-primary btn-large" id="generateTransferCmd">Generate Transfer Commands</button>
+              </div>
+
+              <div id="transferCommands" class="command-output hidden">
+                <h4>🚀 Run these commands to transfer the image</h4>
+                <div id="transferSteps">
+                  <!-- Populated by JS -->
+                </div>
+                <button class="btn btn-secondary" id="copyAllCommands">📋 Copy All Commands</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Download View -->
+        <div id="downloadView" class="view">
+          <div class="download-section">
+            <div class="download-card">
+              <div class="download-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="7 10 12 15 17 10"></polyline>
+                  <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+              </div>
+              <h2>Pull Docker Image</h2>
+              <p>Select a repository and image to get pull commands</p>
+
+              <div class="form-group">
+                <label>Repository</label>
+                <select id="downloadRepoSelect">
+                  <option value="">-- Select a repository --</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label>Image</label>
+                <select id="downloadImageSelect">
+                  <option value="">-- Select a repository first --</option>
+                </select>
+              </div>
+
+              <div id="pullCommands" class="command-output hidden">
+                <h4>Pull Instructions</h4>
+                <div class="command-step">
+                  <span class="step-number">1</span>
+                  <div class="step-content">
+                    <p>Authenticate Docker with GCP:</p>
+                    <code id="pullAuthCmd"></code>
+                    <button class="copy-btn" data-target="pullAuthCmd">Copy</button>
+                  </div>
+                </div>
+                <div class="command-step">
+                  <span class="step-number">2</span>
+                  <div class="step-content">
+                    <p>Pull the image:</p>
+                    <code id="pullImageCmd"></code>
+                    <button class="copy-btn" data-target="pullImageCmd">Copy</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Settings View -->
+        <div id="settingsView" class="view">
+          <div class="settings-section">
+            <div class="settings-card">
+              <h2>⚙️ Settings</h2>
+
+              <div class="settings-group">
+                <h3>Connected Account</h3>
+                <div class="settings-info">
+                  <div class="info-row">
+                    <span class="info-label">Project ID:</span>
+                    <span class="info-value" id="settingsProjectId">-</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">Service Account:</span>
+                    <span class="info-value" id="settingsServiceAccount">-</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="settings-group">
+                <h3>Credentials</h3>
+                <p>Your credentials are stored in your browser's local storage. Click the button below to clear them and
+                  disconnect.</p>
+                <button class="btn btn-secondary" id="clearCredentials">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    style="width: 18px; height: 18px;">
+                    <polyline points="3 6 5 6 21 6"></polyline>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                  </svg>
+                  Clear Credentials & Disconnect
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Modal for viewing packages -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="modalTitle">Repository Details</h2>
+        <button class="modal-close" id="modalClose">&times;</button>
+      </div>
+      <div class="modal-body" id="modalBody">
+        <!-- Dynamic content -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast notifications -->
+  <div id="toast" class="toast hidden">
+    <span id="toastMessage"></span>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+
+</html>
