@@ -242,40 +242,32 @@
 
         <!-- Docker Images View -->
         <div id="dockerView" class="view">
-          <div class="repo-selector">
-            <label>Select Repository:</label>
-            <select id="dockerRepoSelect">
-              <option value="">-- Select a Docker repository --</option>
-            </select>
+          <div class="docker-view-header">
+            <div class="repo-selector">
+              <label>Select Repository:</label>
+              <select id="dockerRepoSelect">
+                <option value="">-- Select a Docker repository --</option>
+              </select>
+            </div>
+            <div class="search-box docker-search">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"></circle>
+                <path d="m21 21-4.35-4.35"></path>
+              </svg>
+              <input type="text" id="dockerSearch" placeholder="Search images or tags...">
+            </div>
           </div>
 
-          <div class="table-container">
-            <div class="table-header">
-              <h3>Docker Images</h3>
-              <div class="search-box">
+          <div class="docker-images-container">
+            <div id="dockerImagesGrid" class="image-cards-grid">
+              <div class="empty-state">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="11" cy="11" r="8"></circle>
-                  <path d="m21 21-4.35-4.35"></path>
+                  <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
+                  <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
                 </svg>
-                <input type="text" id="dockerSearch" placeholder="Search images...">
+                <p>Select a repository to view Docker images</p>
               </div>
             </div>
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Image</th>
-                  <th>Tags</th>
-                  <th>Size</th>
-                  <th>Uploaded</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody id="dockerTableBody">
-                <tr class="empty-row">
-                  <td colspan="5">Select a repository to view Docker images</td>
-                </tr>
-              </tbody>
-            </table>
           </div>
         </div>
 
