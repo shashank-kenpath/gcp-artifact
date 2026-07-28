@@ -1,185 +1,212 @@
-// LocalStorage key for credentials
+// ─── Storage & state ────────────────────────────────────────────────────────
 const STORAGE_KEY = 'gcp_artifact_credentials';
+const REPO_PAGE_SIZE = 12;
+const IMAGE_PAGE_SIZE = 20;
 
-// State
-let repositories = [];
-let currentRepo = null;
-let selectedTransferImage = null;
 let credentials = null;
+let repositories = [];
+let selectedTransferImage = null;
 
-// Enhanced state for Docker images
-let allDockerImages = [];      // Raw images from API
-let groupedImages = {};        // Grouped by base image name
-let dockerSearchTerm = '';     // Current search filter
-let currentLocation = '';      // Current repo location
-let currentRepository = '';    // Current repo name
+// Repo list pagination (client-side over lightweight list)
+let repoSearchQuery = '';
+let repoPage = 1;
 
-// Get credentials from localStorage
-function getStoredCredentials() {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      return JSON.parse(stored);
-    }
-  } catch (e) {
-    console.error('Failed to parse stored credentials:', e);
-  }
-  return null;
-}
-
-// Store credentials in localStorage
-function storeCredentials(creds) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(creds));
-    credentials = creds;
-  } catch (e) {
-    console.error('Failed to store credentials:', e);
-  }
-}
-
-// Clear credentials from localStorage
-function clearCredentials() {
-  localStorage.removeItem(STORAGE_KEY);
-  credentials = null;
-}
-
-// DOM Elements
-const elements = {
-  // Auth Screen
-  authScreen: document.getElementById('authScreen'),
-  mainApp: document.getElementById('mainApp'),
-  credentialsInput: document.getElementById('credentialsInput'),
-  validateCredentials: document.getElementById('validateCredentials'),
-  authError: document.getElementById('authError'),
-
-  // Main App
-  projectId: document.getElementById('projectId'),
-  pageTitle: document.getElementById('pageTitle'),
-  pageSubtitle: document.getElementById('pageSubtitle'),
-  refreshBtn: document.getElementById('refreshBtn'),
-  logoutBtn: document.getElementById('logoutBtn'),
-
-  // Stats
-  totalRepos: document.getElementById('totalRepos'),
-  dockerRepos: document.getElementById('dockerRepos'),
-  otherRepos: document.getElementById('otherRepos'),
-
-  // Navigation
-  navItems: document.querySelectorAll('.nav-item'),
-  views: document.querySelectorAll('.view'),
-
-  // Tables
-  repoTableBody: document.getElementById('repoTableBody'),
-  dockerTableBody: document.getElementById('dockerTableBody'),
-  repoSearch: document.getElementById('repoSearch'),
-  dockerSearch: document.getElementById('dockerSearch'),
-
-  // Selects
-  dockerRepoSelect: document.getElementById('dockerRepoSelect'),
-  downloadRepoSelect: document.getElementById('downloadRepoSelect'),
-  downloadImageSelect: document.getElementById('downloadImageSelect'),
-
-  // Download
-  pullCommands: document.getElementById('pullCommands'),
-  pullAuthCmd: document.getElementById('pullAuthCmd'),
-  pullImageCmd: document.getElementById('pullImageCmd'),
-
-  // Docker Hub Browser
-  popularGrid: document.getElementById('popularGrid'),
-  dockerHubSearch: document.getElementById('dockerHubSearch'),
-  searchDockerHub: document.getElementById('searchDockerHub'),
-  searchResults: document.getElementById('searchResults'),
-  searchResultsBody: document.getElementById('searchResultsBody'),
-
-  // Transfer Section
-  transferSection: document.getElementById('transferSection'),
-  cancelTransfer: document.getElementById('cancelTransfer'),
-  transferSource: document.getElementById('transferSource'),
-  transferDest: document.getElementById('transferDest'),
-  transferRepoSelect: document.getElementById('transferRepoSelect'),
-  transferTagSelect: document.getElementById('transferTagSelect'),
-  transferTargetName: document.getElementById('transferTargetName'),
-  generateTransferCmd: document.getElementById('generateTransferCmd'),
-  transferCommands: document.getElementById('transferCommands'),
-  transferSteps: document.getElementById('transferSteps'),
-  copyAllCommands: document.getElementById('copyAllCommands'),
-
-  // Settings
-  settingsProjectId: document.getElementById('settingsProjectId'),
-  settingsServiceAccount: document.getElementById('settingsServiceAccount'),
-  clearCredentialsBtn: document.getElementById('clearCredentials'),
-
-  // Modal
-  modal: document.getElementById('modal'),
-  modalTitle: document.getElementById('modalTitle'),
-  modalBody: document.getElementById('modalBody'),
-  modalClose: document.getElementById('modalClose'),
-
-  // Toast
-  toast: document.getElementById('toast'),
-  toastMessage: document.getElementById('toastMessage'),
+// Repo detail page state
+const repoDetail = {
+  location: null,
+  name: null,
+  meta: null,
+  format: null,
+  images: [],
+  packages: [],
+  nextPageToken: null,
+  loading: false,
+  range: '7d',
+  search: '',
+  reachedEnd: false,
 };
 
-// Utility Functions
-function showToast(message, duration = 3000) {
-  elements.toastMessage.textContent = message;
-  elements.toast.classList.remove('hidden');
-  setTimeout(() => {
-    elements.toast.classList.add('hidden');
-  }, duration);
+// Download view pagination
+const downloadState = {
+  location: null,
+  name: null,
+  images: [],
+  nextPageToken: null,
+};
+
+// ─── DOM ────────────────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+
+const els = {
+  authScreen: $('authScreen'),
+  mainApp: $('mainApp'),
+  credentialsInput: $('credentialsInput'),
+  validateCredentials: $('validateCredentials'),
+  authError: $('authError'),
+  projectId: $('projectId'),
+  pageTitle: $('pageTitle'),
+  pageSubtitle: $('pageSubtitle'),
+  breadcrumbs: $('breadcrumbs'),
+  refreshBtn: $('refreshBtn'),
+  logoutBtn: $('logoutBtn'),
+  totalRepos: $('totalRepos'),
+  dockerRepos: $('dockerRepos'),
+  otherRepos: $('otherRepos'),
+  repoList: $('repoList'),
+  repoSearch: $('repoSearch'),
+  repoPagination: $('repoPagination'),
+  repoDetailHeader: $('repoDetailHeader'),
+  timelineContainer: $('timelineContainer'),
+  timelineMeta: $('timelineMeta'),
+  loadMoreWrap: $('loadMoreWrap'),
+  loadMoreBtn: $('loadMoreBtn'),
+  timeFilters: $('timeFilters'),
+  imageSearch: $('imageSearch'),
+  popularGrid: $('popularGrid'),
+  dockerHubSearch: $('dockerHubSearch'),
+  searchDockerHub: $('searchDockerHub'),
+  searchResults: $('searchResults'),
+  searchResultsBody: $('searchResultsBody'),
+  transferSection: $('transferSection'),
+  cancelTransfer: $('cancelTransfer'),
+  transferSource: $('transferSource'),
+  transferDest: $('transferDest'),
+  transferRepoSelect: $('transferRepoSelect'),
+  transferTagSelect: $('transferTagSelect'),
+  transferTargetName: $('transferTargetName'),
+  generateTransferCmd: $('generateTransferCmd'),
+  transferCommands: $('transferCommands'),
+  transferSteps: $('transferSteps'),
+  copyAllCommands: $('copyAllCommands'),
+  downloadRepoSelect: $('downloadRepoSelect'),
+  downloadImageSelect: $('downloadImageSelect'),
+  downloadLoadMore: $('downloadLoadMore'),
+  pullCommands: $('pullCommands'),
+  pullAuthCmd: $('pullAuthCmd'),
+  pullImageCmd: $('pullImageCmd'),
+  settingsProjectId: $('settingsProjectId'),
+  settingsServiceAccount: $('settingsServiceAccount'),
+  clearCredentials: $('clearCredentials'),
+  drawer: $('drawer'),
+  drawerTitle: $('drawerTitle'),
+  drawerSubtitle: $('drawerSubtitle'),
+  drawerBody: $('drawerBody'),
+  drawerClose: $('drawerClose'),
+  drawerBackdrop: $('drawerBackdrop'),
+  toast: $('toast'),
+  toastMessage: $('toastMessage'),
+};
+
+// ─── Utils ──────────────────────────────────────────────────────────────────
+function showToast(message, duration = 2800) {
+  els.toastMessage.textContent = message;
+  els.toast.classList.remove('hidden');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => els.toast.classList.add('hidden'), duration);
 }
 
-function formatDate(isoString) {
-  if (!isoString) return 'N/A';
-  const date = new Date(isoString);
-  return date.toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+function escapeHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function formatDate(iso) {
+  if (!iso) return 'N/A';
+  return dayjs(iso).format('MMM D, YYYY · HH:mm');
+}
+
+function relativeDate(iso) {
+  if (!iso) return 'unknown';
+  return dayjs(iso).fromNow();
+}
+
+function formatSize(bytes) {
+  if (!bytes || bytes === 0) return 'N/A';
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), sizes.length - 1);
+  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${sizes[i]}`;
 }
 
 function getFormatBadgeClass(format) {
-  const formatLower = (format || '').toLowerCase();
-  if (formatLower.includes('docker')) return 'docker';
-  if (formatLower.includes('npm')) return 'npm';
-  if (formatLower.includes('maven')) return 'maven';
-  if (formatLower.includes('python') || formatLower.includes('pypi')) return 'python';
+  const f = (format || '').toLowerCase();
+  if (f.includes('docker')) return 'docker';
+  if (f.includes('npm')) return 'npm';
+  if (f.includes('maven')) return 'maven';
+  if (f.includes('python') || f.includes('pypi')) return 'python';
   return 'unknown';
 }
 
 function formatStars(stars) {
-  if (stars >= 1000000) return (stars / 1000000).toFixed(1) + 'M';
-  if (stars >= 1000) return (stars / 1000).toFixed(1) + 'K';
-  return stars.toString();
+  if (stars >= 1e6) return (stars / 1e6).toFixed(1) + 'M';
+  if (stars >= 1e3) return (stars / 1e3).toFixed(1) + 'K';
+  return String(stars);
 }
 
-// Extract base image name (removes SHA digest)
 function getBaseImageName(imageName) {
-  // Image name format: "sha256:abc.../imagename" or "imagename@sha256:abc..."
-  const parts = imageName.split('/');
+  const parts = (imageName || '').split('/');
   const lastPart = parts[parts.length - 1];
-
-  // Remove @sha256:... or sha256:... prefix
-  if (lastPart.includes('@')) {
-    return lastPart.split('@')[0];
-  }
+  if (lastPart.includes('@')) return lastPart.split('@')[0];
   if (lastPart.startsWith('sha256:')) {
-    // If it's just a SHA, try to get name from earlier in path
-    return parts.length > 1 ? parts[parts.length - 2] : lastPart.substring(0, 12);
+    return parts.length > 1 ? parts[parts.length - 2] : lastPart.slice(0, 12);
   }
   return lastPart;
 }
 
-// Group images by base name
+function sinceForRange(range) {
+  const now = dayjs();
+  switch (range) {
+    case '24h':
+      return now.subtract(24, 'hour').toISOString();
+    case '7d':
+      return now.subtract(7, 'day').toISOString();
+    case '30d':
+      return now.subtract(30, 'day').toISOString();
+    case '90d':
+      return now.subtract(90, 'day').toISOString();
+    default:
+      return null;
+  }
+}
+
+function timeBucketLabel(iso) {
+  if (!iso) return 'Unknown date';
+  const d = dayjs(iso);
+  const startOfToday = dayjs().startOf('day');
+  const startOfYesterday = startOfToday.subtract(1, 'day');
+  const startOfWeek = dayjs().startOf('week');
+  const startOfMonth = dayjs().startOf('month');
+
+  if (d.isAfter(startOfToday) || d.isSame(startOfToday)) return 'Today';
+  if (d.isAfter(startOfYesterday) || d.isSame(startOfYesterday)) return 'Yesterday';
+  if (d.isAfter(startOfWeek) || d.isSame(startOfWeek)) return 'This week';
+  if (d.isAfter(startOfMonth) || d.isSame(startOfMonth)) return 'This month';
+  return d.format('MMMM YYYY');
+}
+
+function groupByTimeBucket(items, dateKey = 'uploadedAt') {
+  const order = [];
+  const map = new Map();
+
+  items.forEach((item) => {
+    const label = timeBucketLabel(item[dateKey] || item.updatedAt || item.createdAt);
+    if (!map.has(label)) {
+      map.set(label, []);
+      order.push(label);
+    }
+    map.get(label).push(item);
+  });
+
+  return order.map((label) => ({ label, items: map.get(label) }));
+}
+
 function groupDockerImages(images) {
   const groups = {};
 
-  images.forEach(image => {
+  images.forEach((image) => {
     const baseName = getBaseImageName(image.name);
-
     if (!groups[baseName]) {
       groups[baseName] = {
         name: baseName,
@@ -187,24 +214,22 @@ function groupDockerImages(images) {
         allTags: new Set(),
         totalSize: 0,
         latestUpload: null,
-        location: currentLocation,
-        repository: currentRepository
       };
     }
-
     groups[baseName].variants.push(image);
-    (image.tags || []).forEach(tag => groups[baseName].allTags.add(tag));
+    (image.tags || []).forEach((t) => groups[baseName].allTags.add(t));
     groups[baseName].totalSize += image.sizeBytes || 0;
-
     const uploadDate = image.uploadedAt ? new Date(image.uploadedAt) : null;
-    if (uploadDate && (!groups[baseName].latestUpload || uploadDate > new Date(groups[baseName].latestUpload))) {
+    if (
+      uploadDate &&
+      (!groups[baseName].latestUpload || uploadDate > new Date(groups[baseName].latestUpload))
+    ) {
       groups[baseName].latestUpload = image.uploadedAt;
     }
   });
 
-  // Convert Sets to arrays and sort by latest upload
   return Object.values(groups)
-    .map(g => ({ ...g, allTags: Array.from(g.allTags) }))
+    .map((g) => ({ ...g, allTags: Array.from(g.allTags) }))
     .sort((a, b) => {
       if (!a.latestUpload) return 1;
       if (!b.latestUpload) return -1;
@@ -212,628 +237,1011 @@ function groupDockerImages(images) {
     });
 }
 
-// Format file size
-function formatSize(bytes) {
-  if (!bytes || bytes === 0) return 'N/A';
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${sizes[i]}`;
-}
-
-// Generate correct pull command
 function generatePullCommand(location, repository, imageName, tag) {
-  const registryHost = `${location}-docker.pkg.dev`;
   const projectId = credentials?.project_id || 'PROJECT_ID';
   const tagSuffix = tag ? `:${tag}` : ':latest';
-  return `docker pull ${registryHost}/${projectId}/${repository}/${imageName}${tagSuffix}`;
+  return `docker pull ${location}-docker.pkg.dev/${projectId}/${repository}/${imageName}${tagSuffix}`;
 }
 
-// Show/hide auth screen vs main app
+// ─── Credentials ────────────────────────────────────────────────────────────
+function getStoredCredentials() {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    return stored ? JSON.parse(stored) : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeCredentials(creds) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(creds));
+  credentials = creds;
+}
+
+function clearStoredCredentials() {
+  localStorage.removeItem(STORAGE_KEY);
+  credentials = null;
+}
+
 function showAuthScreen() {
-  elements.authScreen.classList.remove('hidden');
-  elements.mainApp.classList.add('hidden');
+  els.authScreen.classList.remove('hidden');
+  els.mainApp.classList.add('hidden');
 }
 
 function showMainApp() {
-  elements.authScreen.classList.add('hidden');
-  elements.mainApp.classList.remove('hidden');
-
-  // Update displays
+  els.authScreen.classList.add('hidden');
+  els.mainApp.classList.remove('hidden');
   if (credentials) {
-    elements.projectId.textContent = credentials.project_id;
-    if (elements.settingsProjectId) {
-      elements.settingsProjectId.textContent = credentials.project_id;
-    }
-    if (elements.settingsServiceAccount) {
-      elements.settingsServiceAccount.textContent = credentials.client_email;
-    }
+    els.projectId.textContent = credentials.project_id;
+    if (els.settingsProjectId) els.settingsProjectId.textContent = credentials.project_id;
+    if (els.settingsServiceAccount) els.settingsServiceAccount.textContent = credentials.client_email;
   }
 }
 
-// Validate and connect with credentials
-async function validateAndConnect() {
-  const inputValue = elements.credentialsInput.value.trim();
-
-  if (!inputValue) {
-    showAuthError('Please paste your GCP credentials JSON');
-    return;
+// ─── API ────────────────────────────────────────────────────────────────────
+async function apiPost(path, body = {}) {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ credentials, ...body }),
+  });
+  const data = await response.json();
+  if (!response.ok || data.error) {
+    throw new Error(data.error || `Request failed (${response.status})`);
   }
-
-  let creds;
-  try {
-    creds = JSON.parse(inputValue);
-  } catch (e) {
-    showAuthError('Invalid JSON format. Please check your credentials.');
-    return;
-  }
-
-  if (!creds.project_id || !creds.private_key || !creds.client_email) {
-    showAuthError('Missing required fields: project_id, private_key, or client_email');
-    return;
-  }
-
-  // Show loading state
-  elements.validateCredentials.disabled = true;
-  elements.validateCredentials.innerHTML = '<div class="loading-spinner" style="width: 20px; height: 20px; margin-right: 8px;"></div> Validating...';
-  hideAuthError();
-
-  try {
-    const response = await fetch('/api/validate-credentials', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ credentials: creds }),
-    });
-
-    const data = await response.json();
-
-    if (data.valid) {
-      storeCredentials(creds);
-      showMainApp();
-      await fetchRepositories();
-      showToast('Connected successfully!');
-    } else {
-      showAuthError(data.error || 'Failed to validate credentials');
-    }
-  } catch (e) {
-    showAuthError('Connection failed: ' + e.message);
-  } finally {
-    elements.validateCredentials.disabled = false;
-    elements.validateCredentials.innerHTML = `
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-        <polyline points="22 4 12 14.01 9 11.01"></polyline>
-      </svg>
-      Validate & Connect
-    `;
-  }
+  return data;
 }
 
-function showAuthError(message) {
-  elements.authError.textContent = message;
-  elements.authError.classList.remove('hidden');
-}
-
-function hideAuthError() {
-  elements.authError.classList.add('hidden');
-}
-
-// Logout / disconnect
-function logout() {
-  clearCredentials();
-  repositories = [];
-  showAuthScreen();
-  elements.credentialsInput.value = '';
-  showToast('Disconnected');
-}
-
-// API Functions - all now send credentials via POST
 async function fetchRepositories() {
   if (!credentials) return;
-
-  elements.repoTableBody.innerHTML = `
-    <tr class="loading-row">
-      <td colspan="6">
-        <div class="loading-spinner"></div>
-        <span>Loading repositories...</span>
-      </td>
-    </tr>
-  `;
+  els.repoList.innerHTML = `
+    <div class="skeleton-list">
+      <div class="skeleton-row"></div>
+      <div class="skeleton-row"></div>
+      <div class="skeleton-row"></div>
+      <div class="skeleton-row"></div>
+    </div>`;
 
   try {
-    const response = await fetch('/api/repositories', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ credentials }),
-    });
-    const data = await response.json();
-
-    if (data.error) {
-      throw new Error(data.error);
-    }
-
-    repositories = data.repositories;
+    const data = await apiPost('/api/repositories');
+    repositories = data.repositories || [];
+    repoPage = 1;
     updateStats();
-    renderRepositories(repositories);
+    renderRepoList();
     populateRepoSelects();
-
     showToast(`Loaded ${repositories.length} repositories`);
   } catch (error) {
-    console.error('Failed to fetch repositories:', error);
-    elements.repoTableBody.innerHTML = `
-      <tr class="empty-row">
-        <td colspan="6">Error: ${error.message}</td>
-      </tr>
-    `;
+    els.repoList.innerHTML = `<div class="empty-state"><p>Error: ${escapeHtml(error.message)}</p></div>`;
   }
 }
 
-async function fetchDockerImages(location, repository) {
+async function fetchRepoMeta(location, name) {
+  try {
+    const data = await apiPost(`/api/repositories/${location}/${name}`);
+    return data.repository;
+  } catch {
+    // Fallback from cached list
+    return repositories.find((r) => r.location === location && r.name === name) || {
+      name,
+      location,
+      format: 'DOCKER',
+      description: '',
+    };
+  }
+}
+
+async function fetchDockerImagesPage({ location, name, pageToken = null, range = '7d' }) {
+  const since = sinceForRange(range);
+  return apiPost(`/api/repositories/${location}/${name}/docker-images`, {
+    pageSize: IMAGE_PAGE_SIZE,
+    pageToken: pageToken || undefined,
+    orderBy: 'upload_time desc',
+    since: since || undefined,
+  });
+}
+
+async function fetchPackagesPage({ location, name, pageToken = null }) {
+  return apiPost(`/api/repositories/${location}/${name}/packages`, {
+    pageSize: IMAGE_PAGE_SIZE,
+    pageToken: pageToken || undefined,
+    orderBy: 'update_time desc',
+  });
+}
+
+// ─── Routing ────────────────────────────────────────────────────────────────
+function parseHash() {
+  const raw = (location.hash || '#/repositories').replace(/^#\/?/, '');
+  const parts = raw.split('/').filter(Boolean);
+
+  if (!parts.length || parts[0] === 'repositories') {
+    return { name: 'repositories' };
+  }
+  if (parts[0] === 'repo' && parts[1] && parts[2]) {
+    return {
+      name: 'repo',
+      location: decodeURIComponent(parts[1]),
+      repo: decodeURIComponent(parts[2]),
+    };
+  }
+  if (['upload', 'download', 'settings'].includes(parts[0])) {
+    return { name: parts[0] };
+  }
+  return { name: 'repositories' };
+}
+
+function navigate(path) {
+  if (!path.startsWith('#/')) path = '#/' + path.replace(/^\//, '');
+  if (location.hash === path) {
+    handleRoute();
+  } else {
+    location.hash = path;
+  }
+}
+
+function setActiveNav(routeName) {
+  document.querySelectorAll('.nav-item').forEach((item) => {
+    const r = item.dataset.route;
+    item.classList.toggle('active', r === routeName || (routeName === 'repo' && r === 'repositories'));
+  });
+}
+
+function showView(viewId) {
+  document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
+  const el = $(viewId);
+  if (el) el.classList.add('active');
+}
+
+function setHeader({ title, subtitle, crumbs = [] }) {
+  els.pageTitle.textContent = title;
+  els.pageSubtitle.textContent = subtitle;
+  if (!crumbs.length) {
+    els.breadcrumbs.innerHTML = '';
+    els.breadcrumbs.classList.add('hidden');
+  } else {
+    els.breadcrumbs.classList.remove('hidden');
+    els.breadcrumbs.innerHTML = crumbs
+      .map((c, i) => {
+        const isLast = i === crumbs.length - 1;
+        if (isLast || !c.href) {
+          return `<span class="crumb current">${escapeHtml(c.label)}</span>`;
+        }
+        return `<a class="crumb" href="${c.href}">${escapeHtml(c.label)}</a><span class="crumb-sep">/</span>`;
+      })
+      .join('');
+  }
+}
+
+async function handleRoute() {
   if (!credentials) return;
+  const route = parseHash();
 
-  // Store current selection
-  currentLocation = location;
-  currentRepository = repository;
+  if (route.name === 'repositories') {
+    setActiveNav('repositories');
+    showView('repositoriesView');
+    setHeader({
+      title: 'Repositories',
+      subtitle: 'Browse repositories — open one to inspect images & tags',
+      crumbs: [{ label: 'Repositories' }],
+    });
+    if (!repositories.length) await fetchRepositories();
+    else renderRepoList();
+    return;
+  }
 
-  // Show loading state in card grid
-  const grid = document.getElementById('dockerImagesGrid');
-  if (grid) {
-    grid.innerHTML = `
+  if (route.name === 'repo') {
+    setActiveNav('repo');
+    showView('repoDetailView');
+    setHeader({
+      title: route.repo,
+      subtitle: `${route.location}`,
+      crumbs: [
+        { label: 'Repositories', href: '#/repositories' },
+        { label: route.repo },
+      ],
+    });
+    await openRepoPage(route.location, route.repo);
+    return;
+  }
+
+  if (route.name === 'upload') {
+    setActiveNav('upload');
+    showView('uploadView');
+    setHeader({
+      title: 'Upload from Docker Hub',
+      subtitle: 'Transfer public images into your Artifact Registry',
+      crumbs: [{ label: 'Upload' }],
+    });
+    cancelTransferSelection();
+    fetchPopularImages();
+    if (!repositories.length) await fetchRepositories();
+    return;
+  }
+
+  if (route.name === 'download') {
+    setActiveNav('download');
+    showView('downloadView');
+    setHeader({
+      title: 'Download',
+      subtitle: 'Generate pull commands for images in your registry',
+      crumbs: [{ label: 'Download' }],
+    });
+    if (!repositories.length) await fetchRepositories();
+    return;
+  }
+
+  if (route.name === 'settings') {
+    setActiveNav('settings');
+    showView('settingsView');
+    setHeader({
+      title: 'Settings',
+      subtitle: 'Manage credentials and preferences',
+      crumbs: [{ label: 'Settings' }],
+    });
+  }
+}
+
+// ─── Repositories list ──────────────────────────────────────────────────────
+function updateStats() {
+  const docker = repositories.filter((r) => r.format === 'DOCKER').length;
+  els.totalRepos.textContent = repositories.length;
+  els.dockerRepos.textContent = docker;
+  els.otherRepos.textContent = repositories.length - docker;
+}
+
+function filteredRepos() {
+  const q = repoSearchQuery.toLowerCase().trim();
+  if (!q) return repositories;
+  return repositories.filter(
+    (r) =>
+      r.name.toLowerCase().includes(q) ||
+      (r.format || '').toLowerCase().includes(q) ||
+      (r.location || '').toLowerCase().includes(q) ||
+      (r.description || '').toLowerCase().includes(q)
+  );
+}
+
+function renderRepoList() {
+  const list = filteredRepos();
+  const totalPages = Math.max(1, Math.ceil(list.length / REPO_PAGE_SIZE));
+  if (repoPage > totalPages) repoPage = totalPages;
+  const start = (repoPage - 1) * REPO_PAGE_SIZE;
+  const pageItems = list.slice(start, start + REPO_PAGE_SIZE);
+
+  if (!list.length) {
+    els.repoList.innerHTML = `<div class="empty-state"><p>No repositories found</p></div>`;
+    els.repoPagination.innerHTML = '';
+    return;
+  }
+
+  els.repoList.innerHTML = pageItems
+    .map(
+      (repo) => `
+    <a class="repo-card" href="#/repo/${encodeURIComponent(repo.location)}/${encodeURIComponent(repo.name)}">
+      <div class="repo-card-main">
+        <div class="repo-card-icon ${getFormatBadgeClass(repo.format)}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+          </svg>
+        </div>
+        <div class="repo-card-text">
+          <div class="repo-card-title-row">
+            <h4>${escapeHtml(repo.name)}</h4>
+            <span class="format-badge ${getFormatBadgeClass(repo.format)}">${escapeHtml(repo.format)}</span>
+          </div>
+          <p class="repo-card-desc">${escapeHtml(repo.description || 'No description')}</p>
+          <div class="repo-card-meta">
+            <span>${escapeHtml(repo.location)}</span>
+            <span class="dot">·</span>
+            <span title="${escapeHtml(formatDate(repo.updatedAt || repo.createdAt))}">
+              Updated ${escapeHtml(relativeDate(repo.updatedAt || repo.createdAt))}
+            </span>
+            ${repo.sizeFormatted && repo.sizeFormatted !== 'N/A' ? `<span class="dot">·</span><span>${escapeHtml(repo.sizeFormatted)}</span>` : ''}
+          </div>
+        </div>
+      </div>
+      <div class="repo-card-arrow">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="9 18 15 12 9 6"></polyline>
+        </svg>
+      </div>
+    </a>`
+    )
+    .join('');
+
+  renderPagination(els.repoPagination, {
+    page: repoPage,
+    totalPages,
+    total: list.length,
+    pageSize: REPO_PAGE_SIZE,
+    onPage: (p) => {
+      repoPage = p;
+      renderRepoList();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+  });
+}
+
+function renderPagination(container, { page, totalPages, total, pageSize, onPage }) {
+  if (totalPages <= 1) {
+    container.innerHTML = total
+      ? `<span class="pagination-info">Showing ${total} item${total === 1 ? '' : 's'}</span>`
+      : '';
+    return;
+  }
+
+  const from = (page - 1) * pageSize + 1;
+  const to = Math.min(page * pageSize, total);
+
+  container.innerHTML = `
+    <span class="pagination-info">${from}–${to} of ${total}</span>
+    <div class="pagination-controls">
+      <button class="btn btn-secondary btn-small page-btn" data-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}>Previous</button>
+      <span class="page-indicator">Page ${page} / ${totalPages}</span>
+      <button class="btn btn-secondary btn-small page-btn" data-page="${page + 1}" ${page >= totalPages ? 'disabled' : ''}>Next</button>
+    </div>`;
+
+  container.querySelectorAll('.page-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const p = parseInt(btn.dataset.page, 10);
+      if (p >= 1 && p <= totalPages) onPage(p);
+    });
+  });
+}
+
+// ─── Repo detail page ───────────────────────────────────────────────────────
+async function openRepoPage(location, name) {
+  const isSame = repoDetail.location === location && repoDetail.name === name;
+  repoDetail.location = location;
+  repoDetail.name = name;
+
+  // Reset content state when navigating to a (possibly new) repo
+  if (!isSame) {
+    repoDetail.images = [];
+    repoDetail.packages = [];
+    repoDetail.nextPageToken = null;
+    repoDetail.reachedEnd = false;
+    repoDetail.search = '';
+    if (els.imageSearch) els.imageSearch.value = '';
+  }
+
+  // Highlight active time chip
+  els.timeFilters.querySelectorAll('.chip').forEach((chip) => {
+    chip.classList.toggle('active', chip.dataset.range === repoDetail.range);
+  });
+
+  els.repoDetailHeader.innerHTML = `
+    <div class="repo-detail-skeleton">
+      <div class="skeleton-line w-40"></div>
+      <div class="skeleton-line w-60"></div>
+    </div>`;
+  els.timelineContainer.innerHTML = `
+    <div class="loading-state">
+      <div class="loading-spinner"></div>
+      <span>Loading artifacts…</span>
+    </div>`;
+  els.timelineMeta.textContent = '';
+  els.loadMoreWrap.hidden = true;
+
+  const meta = await fetchRepoMeta(location, name);
+  repoDetail.meta = meta;
+  repoDetail.format = meta.format || 'DOCKER';
+
+  els.repoDetailHeader.innerHTML = `
+    <div class="repo-hero">
+      <div class="repo-hero-top">
+        <span class="format-badge ${getFormatBadgeClass(meta.format)}">${escapeHtml(meta.format || 'UNKNOWN')}</span>
+        <span class="pill">${escapeHtml(location)}</span>
+      </div>
+      <h2 class="repo-hero-name">${escapeHtml(name)}</h2>
+      <p class="repo-hero-desc">${escapeHtml(meta.description || 'No description provided')}</p>
+      <div class="repo-hero-stats">
+        <div class="mini-stat">
+          <span class="mini-label">Updated</span>
+          <span class="mini-value" title="${escapeHtml(formatDate(meta.updatedAt))}">${escapeHtml(relativeDate(meta.updatedAt || meta.createdAt))}</span>
+        </div>
+        <div class="mini-stat">
+          <span class="mini-label">Created</span>
+          <span class="mini-value">${escapeHtml(formatDate(meta.createdAt))}</span>
+        </div>
+        <div class="mini-stat">
+          <span class="mini-label">Size</span>
+          <span class="mini-value">${escapeHtml(meta.sizeFormatted || 'N/A')}</span>
+        </div>
+      </div>
+    </div>`;
+
+  setHeader({
+    title: name,
+    subtitle: `${meta.format || 'Repository'} · ${location}`,
+    crumbs: [
+      { label: 'Repositories', href: '#/repositories' },
+      { label: name },
+    ],
+  });
+
+  // Fresh load for this range
+  repoDetail.images = [];
+  repoDetail.packages = [];
+  repoDetail.nextPageToken = null;
+  repoDetail.reachedEnd = false;
+  await loadRepoArtifacts({ reset: true });
+}
+
+async function loadRepoArtifacts({ reset = false } = {}) {
+  if (repoDetail.loading) return;
+  if (!reset && repoDetail.reachedEnd) return;
+
+  repoDetail.loading = true;
+  if (reset) {
+    els.timelineContainer.innerHTML = `
       <div class="loading-state">
         <div class="loading-spinner"></div>
-        <span>Loading Docker images...</span>
-      </div>
-    `;
+        <span>Fetching newest artifacts…</span>
+      </div>`;
+    els.loadMoreWrap.hidden = true;
+  } else {
+    els.loadMoreBtn.disabled = true;
+    els.loadMoreBtn.textContent = 'Loading…';
   }
 
   try {
-    const response = await fetch(`/api/repositories/${location}/${repository}/docker-images`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ credentials }),
-    });
-    const data = await response.json();
+    const isDocker = (repoDetail.format || '').toUpperCase().includes('DOCKER');
 
-    if (data.error) {
-      throw new Error(data.error);
+    if (isDocker) {
+      const data = await fetchDockerImagesPage({
+        location: repoDetail.location,
+        name: repoDetail.name,
+        pageToken: reset ? null : repoDetail.nextPageToken,
+        range: repoDetail.range,
+      });
+
+      const incoming = data.images || [];
+      // Deduplicate by id
+      const seen = new Set(repoDetail.images.map((i) => i.id));
+      incoming.forEach((img) => {
+        if (!seen.has(img.id)) {
+          repoDetail.images.push(img);
+          seen.add(img.id);
+        }
+      });
+
+      repoDetail.nextPageToken = data.nextPageToken || null;
+      repoDetail.reachedEnd = !data.nextPageToken || data.reachedCutoff;
+    } else {
+      const data = await fetchPackagesPage({
+        location: repoDetail.location,
+        name: repoDetail.name,
+        pageToken: reset ? null : repoDetail.nextPageToken,
+      });
+      const incoming = data.packages || [];
+      const seen = new Set(repoDetail.packages.map((p) => p.id));
+      incoming.forEach((pkg) => {
+        if (!seen.has(pkg.id)) {
+          repoDetail.packages.push(pkg);
+          seen.add(pkg.id);
+        }
+      });
+      repoDetail.nextPageToken = data.nextPageToken || null;
+      repoDetail.reachedEnd = !data.nextPageToken;
     }
 
-    // Store and group images
-    allDockerImages = data.images || [];
-    const grouped = groupDockerImages(allDockerImages);
-
-    renderDockerImagesGrid(grouped);
-    showToast(`Loaded ${grouped.length} image groups (${allDockerImages.length} total variants)`);
+    renderTimeline();
   } catch (error) {
-    console.error('Failed to fetch Docker images:', error);
-    if (grid) {
-      grid.innerHTML = `
-        <div class="empty-state">
-          <p>Error: ${error.message}</p>
+    els.timelineContainer.innerHTML = `
+      <div class="empty-state">
+        <p>Failed to load: ${escapeHtml(error.message)}</p>
+      </div>`;
+  } finally {
+    repoDetail.loading = false;
+    els.loadMoreBtn.disabled = false;
+    els.loadMoreBtn.textContent = 'Load more';
+    els.loadMoreWrap.hidden = repoDetail.reachedEnd;
+  }
+}
+
+function getFilteredGroups() {
+  const isDocker = (repoDetail.format || '').toUpperCase().includes('DOCKER');
+  const q = (repoDetail.search || '').toLowerCase().trim();
+
+  if (isDocker) {
+    let groups = groupDockerImages(repoDetail.images);
+    if (q) {
+      groups = groups.filter(
+        (g) =>
+          g.name.toLowerCase().includes(q) ||
+          g.allTags.some((t) => t.toLowerCase().includes(q))
+      );
+    }
+    // Attach uploadedAt for time bucketing
+    const asItems = groups.map((g) => ({
+      ...g,
+      uploadedAt: g.latestUpload,
+      _type: 'image',
+    }));
+    return groupByTimeBucket(asItems, 'uploadedAt');
+  }
+
+  let pkgs = repoDetail.packages;
+  if (q) {
+    pkgs = pkgs.filter((p) => p.name.toLowerCase().includes(q));
+  }
+  const asItems = pkgs.map((p) => ({ ...p, uploadedAt: p.updatedAt || p.createdAt, _type: 'package' }));
+  return groupByTimeBucket(asItems, 'uploadedAt');
+}
+
+function renderTimeline() {
+  const isDocker = (repoDetail.format || '').toUpperCase().includes('DOCKER');
+  const buckets = getFilteredGroups();
+  const totalLoaded = isDocker ? repoDetail.images.length : repoDetail.packages.length;
+  const rangeLabel = {
+    '24h': 'last 24 hours',
+    '7d': 'last 7 days',
+    '30d': 'last 30 days',
+    '90d': 'last 90 days',
+    all: 'all time',
+  }[repoDetail.range];
+
+  const groupCount = buckets.reduce((n, b) => n + b.items.length, 0);
+
+  els.timelineMeta.innerHTML = `
+    <span>Showing <strong>${groupCount}</strong> ${isDocker ? 'image group' : 'package'}${groupCount === 1 ? '' : 's'}
+    from <strong>${totalLoaded}</strong> loaded artifact${totalLoaded === 1 ? '' : 's'}
+    · range: <strong>${rangeLabel}</strong>
+    ${repoDetail.reachedEnd ? '' : ' · more available'}</span>`;
+
+  if (!buckets.length) {
+    els.timelineContainer.innerHTML = `
+      <div class="empty-state">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
+          <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
+        </svg>
+        <p>No artifacts in this time range</p>
+        <p class="muted-hint">Try a wider range or load more if available.</p>
+      </div>`;
+    return;
+  }
+
+  if (isDocker) {
+    els.timelineContainer.innerHTML = buckets
+      .map(
+        (bucket) => `
+      <section class="time-section">
+        <header class="time-section-header">
+          <h3>${escapeHtml(bucket.label)}</h3>
+          <span class="time-section-count">${bucket.items.length}</span>
+        </header>
+        <div class="artifact-list">
+          ${bucket.items
+            .map((group) => {
+              const tags = group.allTags || [];
+              const visible = tags.slice(0, 5);
+              return `
+              <article class="artifact-row" data-image="${escapeHtml(group.name)}">
+                <div class="artifact-main" role="button" tabindex="0">
+                  <div class="artifact-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
+                      <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
+                    </svg>
+                  </div>
+                  <div class="artifact-body">
+                    <div class="artifact-title-row">
+                      <h4>${escapeHtml(group.name)}</h4>
+                      <span class="relative-time" title="${escapeHtml(formatDate(group.latestUpload))}">
+                        ${escapeHtml(relativeDate(group.latestUpload))}
+                      </span>
+                    </div>
+                    <div class="artifact-tags">
+                      ${
+                        visible.length
+                          ? visible.map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join('')
+                          : '<span class="tag muted">untagged</span>'
+                      }
+                      ${tags.length > 5 ? `<span class="tag more">+${tags.length - 5}</span>` : ''}
+                    </div>
+                    <div class="artifact-meta-row">
+                      <span>${group.variants.length} variant${group.variants.length === 1 ? '' : 's'}</span>
+                      <span class="dot">·</span>
+                      <span>${escapeHtml(formatSize(group.totalSize))}</span>
+                      <span class="dot">·</span>
+                      <span>${tags.length} tag${tags.length === 1 ? '' : 's'}</span>
+                    </div>
+                  </div>
+                  <div class="artifact-chevron">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polyline points="9 18 15 12 9 6"></polyline>
+                    </svg>
+                  </div>
+                </div>
+              </article>`;
+            })
+            .join('')}
         </div>
-      `;
+      </section>`
+      )
+      .join('');
+
+    els.timelineContainer.querySelectorAll('.artifact-row').forEach((row) => {
+      const open = () => openImageDrawer(row.dataset.image);
+      row.querySelector('.artifact-main').addEventListener('click', open);
+      row.querySelector('.artifact-main').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          open();
+        }
+      });
+    });
+  } else {
+    els.timelineContainer.innerHTML = buckets
+      .map(
+        (bucket) => `
+      <section class="time-section">
+        <header class="time-section-header">
+          <h3>${escapeHtml(bucket.label)}</h3>
+          <span class="time-section-count">${bucket.items.length}</span>
+        </header>
+        <div class="artifact-list">
+          ${bucket.items
+            .map(
+              (pkg) => `
+            <article class="artifact-row package-row">
+              <div class="artifact-main">
+                <div class="artifact-icon package">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+                  </svg>
+                </div>
+                <div class="artifact-body">
+                  <div class="artifact-title-row">
+                    <h4>${escapeHtml(pkg.name)}</h4>
+                    <span class="relative-time" title="${escapeHtml(formatDate(pkg.updatedAt))}">
+                      ${escapeHtml(relativeDate(pkg.updatedAt || pkg.createdAt))}
+                    </span>
+                  </div>
+                  <div class="artifact-meta-row">
+                    <span>Created ${escapeHtml(formatDate(pkg.createdAt))}</span>
+                  </div>
+                </div>
+              </div>
+            </article>`
+            )
+            .join('')}
+        </div>
+      </section>`
+      )
+      .join('');
+  }
+}
+
+function openImageDrawer(imageName) {
+  const groups = groupDockerImages(repoDetail.images);
+  const group = groups.find((g) => g.name === imageName);
+  if (!group) return;
+
+  const location = repoDetail.location;
+  const repository = repoDetail.name;
+  const tags = group.allTags.length ? group.allTags : ['latest'];
+  // Sort tags: latest first, then semantic-ish, then alpha
+  const sortedTags = [...tags].sort((a, b) => {
+    if (a === 'latest') return -1;
+    if (b === 'latest') return 1;
+    return a.localeCompare(b, undefined, { numeric: true });
+  });
+
+  // Paginate tags in the drawer (client-side over already-loaded variants)
+  const TAG_PAGE = 20;
+  let tagPage = 0;
+
+  const authCmd = `gcloud auth configure-docker ${location}-docker.pkg.dev --quiet`;
+
+  els.drawerTitle.textContent = imageName;
+  els.drawerSubtitle.textContent = `${repository} · ${location}`;
+
+  function renderDrawerTags() {
+    const slice = sortedTags.slice(0, (tagPage + 1) * TAG_PAGE);
+    const hasMore = slice.length < sortedTags.length;
+    const tagsEl = els.drawerBody.querySelector('#drawerTags');
+    if (!tagsEl) return;
+    tagsEl.innerHTML = `
+      <div class="drawer-tags-list">
+        ${slice
+          .map((tag) => {
+            const pull = generatePullCommand(location, repository, imageName, tag);
+            return `
+            <div class="drawer-tag-row">
+              <div class="drawer-tag-info">
+                <code class="tag-name">${escapeHtml(tag)}</code>
+              </div>
+              <div class="drawer-tag-actions">
+                <button class="btn btn-secondary btn-small copy-pull" data-cmd="${escapeHtml(pull)}" type="button">Copy pull</button>
+              </div>
+            </div>`;
+          })
+          .join('')}
+      </div>
+      ${
+        hasMore
+          ? `<button class="btn btn-secondary btn-small" id="moreTagsBtn" type="button" style="margin-top:12px;">
+              Show more tags (${sortedTags.length - slice.length} left)
+            </button>`
+          : ''
+      }`;
+
+    tagsEl.querySelectorAll('.copy-pull').forEach((btn) => {
+      btn.addEventListener('click', () => copyToClipboard(btn.dataset.cmd));
+    });
+    const more = tagsEl.querySelector('#moreTagsBtn');
+    if (more) {
+      more.addEventListener('click', () => {
+        tagPage += 1;
+        renderDrawerTags();
+      });
     }
   }
-}
 
-async function fetchPackages(location, repository) {
-  if (!credentials) return [];
+  // Variants sorted by upload time, paginated
+  const variants = [...group.variants].sort((a, b) => {
+    return new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0);
+  });
+  const VAR_PAGE = 10;
+  let varPage = 0;
 
-  try {
-    const response = await fetch(`/api/repositories/${location}/${repository}/packages`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ credentials }),
-    });
-    const data = await response.json();
-    return data.packages || [];
-  } catch (error) {
-    console.error('Failed to fetch packages:', error);
-    return [];
+  function renderVariants() {
+    const slice = variants.slice(0, (varPage + 1) * VAR_PAGE);
+    const hasMore = slice.length < variants.length;
+    const el = els.drawerBody.querySelector('#drawerVariants');
+    if (!el) return;
+    el.innerHTML = `
+      <div class="variants-list">
+        ${slice
+          .map(
+            (v) => `
+          <div class="variant-item">
+            <div class="variant-info">
+              <span class="variant-tags">${escapeHtml((v.tags || []).join(', ') || 'untagged')}</span>
+              <span class="variant-meta">${escapeHtml(v.sizeFormatted)} · ${escapeHtml(relativeDate(v.uploadedAt))}</span>
+            </div>
+          </div>`
+          )
+          .join('')}
+      </div>
+      ${
+        hasMore
+          ? `<button class="btn btn-secondary btn-small" id="moreVarsBtn" type="button" style="margin-top:12px;">
+              Show more variants
+            </button>`
+          : ''
+      }`;
+    const more = el.querySelector('#moreVarsBtn');
+    if (more) {
+      more.addEventListener('click', () => {
+        varPage += 1;
+        renderVariants();
+      });
+    }
   }
+
+  const defaultPull = generatePullCommand(location, repository, imageName, sortedTags[0]);
+
+  els.drawerBody.innerHTML = `
+    <div class="drawer-section">
+      <h4>Pull</h4>
+      <div class="command-block compact">
+        <div class="command-step">
+          <span class="step-number">1</span>
+          <div class="step-content">
+            <p>Authenticate</p>
+            <code>${escapeHtml(authCmd)}</code>
+            <button class="copy-btn" type="button" data-copy="${escapeHtml(authCmd)}">Copy</button>
+          </div>
+        </div>
+        <div class="command-step">
+          <span class="step-number">2</span>
+          <div class="step-content">
+            <p>Pull (default tag: ${escapeHtml(sortedTags[0])})</p>
+            <code>${escapeHtml(defaultPull)}</code>
+            <button class="copy-btn" type="button" data-copy="${escapeHtml(defaultPull)}">Copy</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="drawer-section">
+      <div class="section-head">
+        <h4>Tags</h4>
+        <span class="muted-hint">${sortedTags.length} total</span>
+      </div>
+      <div id="drawerTags"></div>
+    </div>
+
+    <div class="drawer-section">
+      <div class="section-head">
+        <h4>Variants by time</h4>
+        <span class="muted-hint">${variants.length} loaded</span>
+      </div>
+      <div id="drawerVariants"></div>
+    </div>
+  `;
+
+  els.drawerBody.querySelectorAll('[data-copy]').forEach((btn) => {
+    btn.addEventListener('click', () => copyToClipboard(btn.dataset.copy));
+  });
+
+  renderDrawerTags();
+  renderVariants();
+  openDrawer();
 }
 
+function openDrawer() {
+  els.drawer.classList.remove('hidden');
+  els.drawer.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('drawer-open');
+}
+
+function closeDrawer() {
+  els.drawer.classList.add('hidden');
+  els.drawer.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('drawer-open');
+}
+
+// ─── Upload / Docker Hub ────────────────────────────────────────────────────
 async function fetchPopularImages() {
   try {
     const response = await fetch('/api/dockerhub/popular');
     const data = await response.json();
     renderPopularImages(data.images || []);
-  } catch (error) {
-    console.error('Failed to fetch popular images:', error);
+  } catch (e) {
+    console.error(e);
   }
 }
 
+function renderPopularImages(images) {
+  if (!els.popularGrid) return;
+  els.popularGrid.innerHTML = images
+    .map(
+      (img) => `
+    <div class="popular-card" data-image="${escapeHtml(img.name)}">
+      <div class="popular-card-name">
+        ${escapeHtml(img.name)}
+        ${!img.name.includes('/') ? '<span class="official-badge">Official</span>' : ''}
+      </div>
+      <div class="popular-card-desc">${escapeHtml(img.description)}</div>
+      <span class="popular-card-category">${escapeHtml(img.category)}</span>
+    </div>`
+    )
+    .join('');
+
+  els.popularGrid.querySelectorAll('.popular-card').forEach((card) => {
+    card.addEventListener('click', () => selectImageForTransfer(card.dataset.image));
+  });
+}
+
 async function searchDockerHubApi(query) {
-  elements.searchResultsBody.innerHTML = `
-    <tr class="loading-row">
-      <td colspan="5">
-        <div class="loading-spinner"></div>
-        <span>Searching Docker Hub...</span>
-      </td>
-    </tr>
-  `;
-  elements.searchResults.classList.remove('hidden');
+  els.searchResultsBody.innerHTML = `
+    <tr class="loading-row"><td colspan="5">
+      <div class="loading-spinner"></div><span>Searching Docker Hub…</span>
+    </td></tr>`;
+  els.searchResults.classList.remove('hidden');
 
   try {
     const response = await fetch(`/api/dockerhub/search?query=${encodeURIComponent(query)}`);
     const data = await response.json();
-
-    if (data.error) {
-      throw new Error(data.error);
-    }
-
+    if (data.error) throw new Error(data.error);
     renderSearchResults(data.results || []);
     showToast(`Found ${data.count} results`);
   } catch (error) {
-    console.error('Docker Hub search error:', error);
-    elements.searchResultsBody.innerHTML = `
-      <tr class="empty-row">
-        <td colspan="5">Error: ${error.message}</td>
-      </tr>
-    `;
+    els.searchResultsBody.innerHTML = `<tr class="empty-row"><td colspan="5">Error: ${escapeHtml(error.message)}</td></tr>`;
   }
+}
+
+function renderSearchResults(results) {
+  if (!results.length) {
+    els.searchResultsBody.innerHTML = `<tr class="empty-row"><td colspan="5">No images found</td></tr>`;
+    return;
+  }
+
+  els.searchResultsBody.innerHTML = results
+    .map(
+      (r) => `
+    <tr>
+      <td><strong style="color: var(--text-primary)">${escapeHtml(r.name)}</strong></td>
+      <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+        ${escapeHtml(r.description || '-')}
+      </td>
+      <td><span class="stars">⭐ ${formatStars(r.stars)}</span></td>
+      <td>${r.isOfficial ? '<span class="official-mark">Official</span>' : '-'}</td>
+      <td>
+        <button class="btn btn-primary btn-small select-transfer" data-image="${escapeHtml(r.name)}" type="button">Select</button>
+      </td>
+    </tr>`
+    )
+    .join('');
+
+  els.searchResultsBody.querySelectorAll('.select-transfer').forEach((btn) => {
+    btn.addEventListener('click', () => selectImageForTransfer(btn.dataset.image));
+  });
 }
 
 async function fetchImageTags(imageName) {
   try {
     let namespace = '_';
     let repo = imageName;
-
     if (imageName.includes('/')) {
       const parts = imageName.split('/');
       namespace = parts[0];
       repo = parts[1];
     }
-
-    const response = await fetch(`/api/dockerhub/tags/${namespace}/${repo}`);
+    const response = await fetch(`/api/dockerhub/tags/${namespace}/${repo}?pageSize=50`);
     const data = await response.json();
     return data.tags || [];
-  } catch (error) {
-    console.error('Failed to fetch tags:', error);
+  } catch {
     return [];
   }
 }
 
-// Render Functions
-function updateStats() {
-  const docker = repositories.filter(r => r.format === 'DOCKER').length;
-  const other = repositories.length - docker;
-
-  elements.totalRepos.textContent = repositories.length;
-  elements.dockerRepos.textContent = docker;
-  elements.otherRepos.textContent = other;
-}
-
-function renderRepositories(repos) {
-  if (repos.length === 0) {
-    elements.repoTableBody.innerHTML = `
-      <tr class="empty-row">
-        <td colspan="6">No repositories found</td>
-      </tr>
-    `;
-    return;
-  }
-
-  elements.repoTableBody.innerHTML = repos.map(repo => `
-    <tr>
-      <td>
-        <strong style="color: var(--text-primary)">${repo.name}</strong>
-      </td>
-      <td>
-        <span class="format-badge ${getFormatBadgeClass(repo.format)}">${repo.format}</span>
-      </td>
-      <td>${repo.location}</td>
-      <td>${repo.description || '-'}</td>
-      <td>${formatDate(repo.createdAt)}</td>
-      <td>
-        <button class="action-btn" onclick="viewRepoDetails('${repo.location}', '${repo.name}', '${repo.format}')" title="View Details">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-            <circle cx="12" cy="12" r="3"></circle>
-          </svg>
-        </button>
-        ${repo.format === 'DOCKER' ? `
-          <button class="action-btn" onclick="showDockerImagesForRepo('${repo.location}', '${repo.name}')" title="View Docker Images">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
-              <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
-            </svg>
-          </button>
-        ` : ''}
-      </td>
-    </tr>
-  `).join('');
-}
-
-function renderDockerImagesGrid(groups) {
-  const grid = document.getElementById('dockerImagesGrid');
-  if (!grid) return;
-
-  if (groups.length === 0) {
-    grid.innerHTML = `
-      <div class="empty-state">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
-          <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
-        </svg>
-        <p>No Docker images found in this repository</p>
-      </div>
-    `;
-    return;
-  }
-
-  // Apply search filter if set
-  let filtered = groups;
-  if (dockerSearchTerm) {
-    const term = dockerSearchTerm.toLowerCase();
-    filtered = groups.filter(g =>
-      g.name.toLowerCase().includes(term) ||
-      g.allTags.some(t => t.toLowerCase().includes(term))
-    );
-  }
-
-  grid.innerHTML = filtered.map(group => `
-    <div class="image-card" onclick="showImageDetails('${group.name}')" data-image-name="${group.name}">
-      <div class="image-card-header">
-        <div class="image-card-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
-            <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
-          </svg>
-        </div>
-        <div class="image-card-title">
-          <h4>${group.name}</h4>
-          <span class="image-card-meta">${group.variants.length} variant${group.variants.length !== 1 ? 's' : ''}</span>
-        </div>
-      </div>
-      
-      <div class="image-card-tags">
-        ${group.allTags.length > 0
-      ? group.allTags.slice(0, 4).map(tag => `<span class="tag">${tag}</span>`).join('')
-      : '<span class="tag muted">untagged</span>'}
-        ${group.allTags.length > 4 ? `<span class="tag more">+${group.allTags.length - 4}</span>` : ''}
-      </div>
-      
-      <div class="image-card-stats">
-        <div class="stat">
-          <span class="stat-label">Total Size</span>
-          <span class="stat-value">${formatSize(group.totalSize)}</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">Latest</span>
-          <span class="stat-value">${formatDate(group.latestUpload)}</span>
-        </div>
-      </div>
-      
-      <div class="image-card-action">
-        <span>View Details</span>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="9 18 15 12 9 6"></polyline>
-        </svg>
-      </div>
-    </div>
-  `).join('');
-}
-
-// Show image details modal
-function showImageDetails(imageName) {
-  const group = groupDockerImages(allDockerImages).find(g => g.name === imageName);
-  if (!group) return;
-
-  elements.modalTitle.textContent = imageName;
-
-  const pullCmd = generatePullCommand(currentLocation, currentRepository, imageName, group.allTags[0] || 'latest');
-  const authCmd = `gcloud auth configure-docker ${currentLocation}-docker.pkg.dev --quiet`;
-
-  elements.modalBody.innerHTML = `
-    <div class="image-details">
-      <div class="image-details-header">
-        <div class="image-meta">
-          <div class="meta-item">
-            <span class="label">Repository</span>
-            <span class="value">${currentRepository}</span>
-          </div>
-          <div class="meta-item">
-            <span class="label">Location</span>
-            <span class="value">${currentLocation}</span>
-          </div>
-          <div class="meta-item">
-            <span class="label">Variants</span>
-            <span class="value">${group.variants.length}</span>
-          </div>
-        </div>
-      </div>
-      
-      <div class="image-details-section">
-        <h4>📥 Pull Command</h4>
-        <div class="command-block">
-          <div class="command-step">
-            <span class="step-number">1</span>
-            <div class="step-content">
-              <p>Authenticate Docker:</p>
-              <code>${authCmd}</code>
-              <button class="copy-btn" onclick="copyToClipboard('${authCmd}')">Copy</button>
-            </div>
-          </div>
-          <div class="command-step">
-            <span class="step-number">2</span>
-            <div class="step-content">
-              <p>Pull the image:</p>
-              <code>${pullCmd}</code>
-              <button class="copy-btn" onclick="copyToClipboard(\`${pullCmd}\`)">Copy</button>
-            </div>
-          </div>
-        </div>
-      </div>
-      
-      <div class="image-details-section">
-        <h4>🏷️ Available Tags</h4>
-        <div class="tags-grid">
-          ${group.allTags.length > 0
-      ? group.allTags.map(tag => `
-                <div class="tag-item" onclick="copyToClipboard('${generatePullCommand(currentLocation, currentRepository, imageName, tag)}')">
-                  <span class="tag-name">${tag}</span>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                  </svg>
-                </div>
-              `).join('')
-      : '<p class="muted">No tags available</p>'}
-        </div>
-      </div>
-      
-      <div class="image-details-section">
-        <h4>📦 Variants</h4>
-        <div class="variants-list">
-          ${group.variants.map(v => `
-            <div class="variant-item">
-              <div class="variant-info">
-                <span class="variant-tags">${v.tags?.join(', ') || 'untagged'}</span>
-                <span class="variant-meta">${v.sizeFormatted} • ${formatDate(v.uploadedAt)}</span>
-              </div>
-            </div>
-          `).join('')}
-        </div>
-      </div>
-    </div>
-  `;
-
-  elements.modal.classList.remove('hidden');
-}
-
-// Keep old function for backward compatibility
-function renderDockerImages(images) {
-  allDockerImages = images;
-  const grouped = groupDockerImages(images);
-  renderDockerImagesGrid(grouped);
-}
-
-function renderPopularImages(images) {
-  if (!elements.popularGrid) return;
-
-  elements.popularGrid.innerHTML = images.map(img => `
-    <div class="popular-card" onclick="selectImageForTransfer('${img.name}')">
-      <div class="popular-card-name">
-        ${img.name}
-        ${!img.name.includes('/') ? '<span class="official-badge">Official</span>' : ''}
-      </div>
-      <div class="popular-card-desc">${img.description}</div>
-      <span class="popular-card-category">${img.category}</span>
-    </div>
-  `).join('');
-}
-
-function renderSearchResults(results) {
-  if (results.length === 0) {
-    elements.searchResultsBody.innerHTML = `
-      <tr class="empty-row">
-        <td colspan="5">No images found</td>
-      </tr>
-    `;
-    return;
-  }
-
-  elements.searchResultsBody.innerHTML = results.map(result => `
-    <tr>
-      <td>
-        <strong style="color: var(--text-primary)">${result.name}</strong>
-      </td>
-      <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-        ${result.description || '-'}
-      </td>
-      <td>
-        <span class="stars">⭐ ${formatStars(result.stars)}</span>
-      </td>
-      <td>
-        ${result.isOfficial ? '<span class="official-mark"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg> Official</span>' : '-'}
-      </td>
-      <td>
-        <button class="btn btn-primary" style="padding: 8px 16px; font-size: 0.8rem;" onclick="selectImageForTransfer('${result.name}')">
-          Select
-        </button>
-      </td>
-    </tr>
-  `).join('');
-}
-
 function populateRepoSelects() {
-  const dockerRepos = repositories.filter(r => r.format === 'DOCKER');
+  const dockerRepos = repositories.filter((r) => r.format === 'DOCKER');
+  const opts = dockerRepos
+    .map((r) => `<option value="${r.location}|${r.name}">${r.name} (${r.location})</option>`)
+    .join('');
 
-  const dockerOptions = dockerRepos.map(r =>
-    `<option value="${r.location}|${r.name}">${r.name} (${r.location})</option>`
-  ).join('');
-
-  if (elements.dockerRepoSelect) {
-    elements.dockerRepoSelect.innerHTML = `<option value="">-- Select a Docker repository --</option>${dockerOptions}`;
+  if (els.downloadRepoSelect) {
+    els.downloadRepoSelect.innerHTML = `<option value="">-- Select a repository --</option>${opts}`;
   }
-  if (elements.downloadRepoSelect) {
-    elements.downloadRepoSelect.innerHTML = `<option value="">-- Select a repository --</option>${dockerOptions}`;
-  }
-  if (elements.transferRepoSelect) {
-    elements.transferRepoSelect.innerHTML = `<option value="">-- Select a Docker repository --</option>${dockerOptions}`;
+  if (els.transferRepoSelect) {
+    els.transferRepoSelect.innerHTML = `<option value="">-- Select a Docker repository --</option>${opts}`;
   }
 }
 
-// Transfer Functions
 async function selectImageForTransfer(imageName) {
   selectedTransferImage = imageName;
+  document.querySelector('.popular-images-section')?.classList.add('hidden');
+  document.querySelector('.search-section')?.classList.add('hidden');
+  els.transferSection.classList.remove('hidden');
+  els.transferSource.textContent = imageName;
+  els.transferDest.textContent = 'Select repository…';
+  els.transferTargetName.value = '';
+  els.transferCommands.classList.add('hidden');
 
-  document.querySelector('.popular-images-section').classList.add('hidden');
-  document.querySelector('.search-section').classList.add('hidden');
-  elements.transferSection.classList.remove('hidden');
-
-  elements.transferSource.textContent = imageName;
-  elements.transferDest.textContent = 'Select repository...';
-
-  elements.transferTargetName.value = '';
-  elements.transferCommands.classList.add('hidden');
-
-  elements.transferTagSelect.innerHTML = '<option value="">Loading tags...</option>';
+  els.transferTagSelect.innerHTML = '<option value="">Loading tags…</option>';
   const tags = await fetchImageTags(imageName);
 
-  if (tags.length > 0) {
-    const commonTags = ['latest', '22', '22.0', '21', '20', 'stable', 'alpine'];
-    const sortedTags = tags.sort((a, b) => {
-      const aIndex = commonTags.indexOf(a.name);
-      const bIndex = commonTags.indexOf(b.name);
-      if (aIndex !== -1 && bIndex !== -1) return aIndex - bIndex;
-      if (aIndex !== -1) return -1;
-      if (bIndex !== -1) return 1;
+  if (tags.length) {
+    const common = ['latest', '22', '22.0', '21', '20', 'stable', 'alpine'];
+    const sorted = tags.sort((a, b) => {
+      const ai = common.indexOf(a.name);
+      const bi = common.indexOf(b.name);
+      if (ai !== -1 && bi !== -1) return ai - bi;
+      if (ai !== -1) return -1;
+      if (bi !== -1) return 1;
       return 0;
     });
-
-    elements.transferTagSelect.innerHTML = sortedTags.slice(0, 50).map(tag =>
-      `<option value="${tag.name}">${tag.name} (${tag.sizeFormatted})</option>`
-    ).join('');
+    els.transferTagSelect.innerHTML = sorted
+      .slice(0, 50)
+      .map((t) => `<option value="${escapeHtml(t.name)}">${escapeHtml(t.name)} (${escapeHtml(t.sizeFormatted)})</option>`)
+      .join('');
   } else {
-    elements.transferTagSelect.innerHTML = '<option value="latest">latest</option>';
+    els.transferTagSelect.innerHTML = '<option value="latest">latest</option>';
   }
 
-  showToast(`Selected ${imageName} for transfer`);
+  showToast(`Selected ${imageName}`);
 }
 
 function cancelTransferSelection() {
   selectedTransferImage = null;
-
-  document.querySelector('.popular-images-section').classList.remove('hidden');
-  document.querySelector('.search-section').classList.remove('hidden');
-  elements.transferSection.classList.add('hidden');
+  document.querySelector('.popular-images-section')?.classList.remove('hidden');
+  document.querySelector('.search-section')?.classList.remove('hidden');
+  els.transferSection?.classList.add('hidden');
 }
 
 async function generateTransferCommands() {
-  const repoValue = elements.transferRepoSelect.value;
-  const tag = elements.transferTagSelect.value;
-  const targetName = elements.transferTargetName.value.trim();
+  const repoValue = els.transferRepoSelect.value;
+  const tag = els.transferTagSelect.value;
+  const targetName = els.transferTargetName.value.trim();
 
-  if (!repoValue) {
-    showToast('Please select a target repository');
-    return;
-  }
-
-  if (!tag) {
-    showToast('Please select a tag');
-    return;
-  }
+  if (!repoValue) return showToast('Please select a target repository');
+  if (!tag) return showToast('Please select a tag');
 
   const [location, repository] = repoValue.split('|');
 
@@ -847,385 +1255,305 @@ async function generateTransferCommands() {
         targetRepo: repository,
         targetLocation: location,
         targetName: targetName || null,
-        credentials: credentials,
+        credentials,
       }),
     });
-
     const data = await response.json();
+    if (data.error) throw new Error(data.error);
 
-    if (data.error) {
-      throw new Error(data.error);
-    }
-
-    elements.transferDest.textContent = data.summary.target;
-
-    elements.transferSteps.innerHTML = data.steps.map(step => `
+    els.transferDest.textContent = data.summary.target;
+    els.transferSteps.innerHTML = data.steps
+      .map(
+        (step) => `
       <div class="command-step">
         <span class="step-number">${step.step}</span>
         <div class="step-content">
-          <p><strong>${step.title}</strong></p>
-          <p>${step.description}</p>
-          <code>${step.command}</code>
-          <button class="copy-btn" onclick="copyToClipboard(\`${step.command.replace(/`/g, '\\`')}\`)">Copy</button>
+          <p><strong>${escapeHtml(step.title)}</strong></p>
+          <p>${escapeHtml(step.description)}</p>
+          <code>${escapeHtml(step.command)}</code>
+          <button class="copy-btn" type="button" data-copy="${escapeHtml(step.command)}">Copy</button>
         </div>
-      </div>
-    `).join('');
+      </div>`
+      )
+      .join('');
 
-    elements.transferCommands.classList.remove('hidden');
+    els.transferSteps.querySelectorAll('[data-copy]').forEach((btn) => {
+      btn.addEventListener('click', () => copyToClipboard(btn.dataset.copy));
+    });
 
-    window.allTransferCommands = data.steps.map(s => s.command).join('\n\n');
-
-    showToast('Transfer commands generated!');
+    els.transferCommands.classList.remove('hidden');
+    window.allTransferCommands = data.steps.map((s) => s.command).join('\n\n');
+    showToast('Transfer commands generated');
   } catch (error) {
-    console.error('Failed to generate transfer commands:', error);
     showToast('Error: ' + error.message);
   }
 }
 
-// Action Functions
-async function viewRepoDetails(location, repoName, format) {
-  elements.modalTitle.textContent = `${repoName} Details`;
-  elements.modalBody.innerHTML = '<div class="loading-spinner"></div><p>Loading packages...</p>';
-  elements.modal.classList.remove('hidden');
+// ─── Download (paginated) ───────────────────────────────────────────────────
+async function loadDownloadImages({ reset = false } = {}) {
+  if (!downloadState.location) return;
 
-  const packages = await fetchPackages(location, repoName);
-
-  if (packages.length === 0) {
-    elements.modalBody.innerHTML = `
-      <div style="text-align: center; padding: 40px; color: var(--text-muted);">
-        <p>No packages found in this ${format} repository.</p>
-        ${format === 'DOCKER' ? '<p>Use the Docker Images view to see container images.</p>' : ''}
-      </div>
-    `;
-    return;
+  if (reset) {
+    downloadState.images = [];
+    downloadState.nextPageToken = null;
+    els.downloadImageSelect.innerHTML = '<option value="">Loading…</option>';
   }
 
-  elements.modalBody.innerHTML = `
-    <table class="data-table">
-      <thead>
-        <tr>
-          <th>Package Name</th>
-          <th>Created</th>
-          <th>Updated</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${packages.map(pkg => `
-          <tr>
-            <td><strong style="color: var(--text-primary)">${pkg.name}</strong></td>
-            <td>${formatDate(pkg.createdAt)}</td>
-            <td>${formatDate(pkg.updatedAt)}</td>
-          </tr>
-        `).join('')}
-      </tbody>
-    </table>
-  `;
+  try {
+    const data = await fetchDockerImagesPage({
+      location: downloadState.location,
+      name: downloadState.name,
+      pageToken: reset ? null : downloadState.nextPageToken,
+      range: 'all',
+    });
+
+    const incoming = data.images || [];
+    downloadState.images.push(...incoming);
+    downloadState.nextPageToken = data.nextPageToken || null;
+
+    const grouped = groupDockerImages(downloadState.images);
+    const options = [];
+    grouped.forEach((group) => {
+      const tags = group.allTags.length ? group.allTags : ['latest'];
+      // Only first few tags per image to keep select usable
+      tags.slice(0, 8).forEach((tag) => {
+        options.push({
+          location: downloadState.location,
+          repo: downloadState.name,
+          imageName: group.name,
+          tag,
+          label: `${group.name}:${tag}`,
+        });
+      });
+    });
+
+    els.downloadImageSelect.innerHTML = `
+      <option value="">-- Select an image --</option>
+      ${options
+        .map(
+          (o) =>
+            `<option value="${o.location}|${o.repo}|${o.imageName}|${o.tag}">${escapeHtml(o.label)}</option>`
+        )
+        .join('')}`;
+
+    els.downloadLoadMore.hidden = !downloadState.nextPageToken;
+  } catch {
+    els.downloadImageSelect.innerHTML = '<option value="">Error loading images</option>';
+    els.downloadLoadMore.hidden = true;
+  }
 }
 
-function showDockerImagesForRepo(location, repoName) {
-  switchView('docker');
-  elements.dockerRepoSelect.value = `${location}|${repoName}`;
-  fetchDockerImages(location, repoName);
-}
+// ─── Auth ───────────────────────────────────────────────────────────────────
+async function validateAndConnect() {
+  const inputValue = els.credentialsInput.value.trim();
+  if (!inputValue) return showAuthError('Please paste your GCP credentials JSON');
 
-async function showPullCommand(uri, tag) {
-  elements.modalTitle.textContent = 'Pull Command';
-
-  const registryHost = uri.split('/')[0];
-  const authCmd = `gcloud auth configure-docker ${registryHost} --quiet`;
-
-  let pullCmd = `docker pull ${uri}`;
-  if (tag) {
-    const baseUri = uri.split('@')[0];
-    pullCmd = `docker pull ${baseUri}:${tag}`;
+  let creds;
+  try {
+    creds = JSON.parse(inputValue);
+  } catch {
+    return showAuthError('Invalid JSON format. Please check your credentials.');
   }
 
-  elements.modalBody.innerHTML = `
-    <div class="command-output" style="margin-top: 0;">
-      <div class="command-step">
-        <span class="step-number">1</span>
-        <div class="step-content">
-          <p>Authenticate Docker with GCP:</p>
-          <code>${authCmd}</code>
-          <button class="copy-btn" onclick="copyToClipboard('${authCmd}')">Copy</button>
-        </div>
-      </div>
-      <div class="command-step">
-        <span class="step-number">2</span>
-        <div class="step-content">
-          <p>Pull the image:</p>
-          <code>${pullCmd}</code>
-          <button class="copy-btn" onclick="copyToClipboard('${pullCmd}')">Copy</button>
-        </div>
-      </div>
-    </div>
-  `;
+  if (!creds.project_id || !creds.private_key || !creds.client_email) {
+    return showAuthError('Missing required fields: project_id, private_key, or client_email');
+  }
 
-  elements.modal.classList.remove('hidden');
+  els.validateCredentials.disabled = true;
+  els.validateCredentials.innerHTML =
+    '<div class="loading-spinner" style="width:20px;height:20px;margin-right:8px;"></div> Validating…';
+  hideAuthError();
+
+  try {
+    const response = await fetch('/api/validate-credentials', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credentials: creds }),
+    });
+    const data = await response.json();
+
+    if (data.valid) {
+      storeCredentials(creds);
+      showMainApp();
+      if (!location.hash || location.hash === '#') {
+        // hashchange will run handleRoute once
+        location.hash = '#/repositories';
+      } else {
+        await handleRoute();
+      }
+      showToast('Connected successfully');
+    } else {
+      showAuthError(data.error || 'Failed to validate credentials');
+    }
+  } catch (e) {
+    showAuthError('Connection failed: ' + e.message);
+  } finally {
+    els.validateCredentials.disabled = false;
+    els.validateCredentials.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+        <polyline points="22 4 12 14.01 9 11.01"></polyline>
+      </svg>
+      Validate &amp; Connect`;
+  }
+}
+
+function showAuthError(message) {
+  els.authError.textContent = message;
+  els.authError.classList.remove('hidden');
+}
+
+function hideAuthError() {
+  els.authError.classList.add('hidden');
+}
+
+function logout() {
+  clearStoredCredentials();
+  repositories = [];
+  showAuthScreen();
+  els.credentialsInput.value = '';
+  showToast('Disconnected');
 }
 
 function copyToClipboard(text) {
-  navigator.clipboard.writeText(text).then(() => {
-    showToast('Copied to clipboard!');
-  }).catch(err => {
-    console.error('Failed to copy:', err);
-    showToast('Failed to copy');
-  });
+  navigator.clipboard.writeText(text).then(
+    () => showToast('Copied to clipboard'),
+    () => showToast('Failed to copy')
+  );
 }
 
-// View Switching
-function switchView(viewName) {
-  elements.navItems.forEach(item => {
-    item.classList.toggle('active', item.dataset.view === viewName);
-  });
-
-  elements.views.forEach(view => {
-    view.classList.toggle('active', view.id === `${viewName}View`);
-  });
-
-  const titles = {
-    repositories: { title: 'Repositories', subtitle: 'View and manage your artifact repositories' },
-    docker: { title: 'Docker Images', subtitle: 'Browse and pull Docker images from your registry' },
-    upload: { title: 'Upload from Docker Hub', subtitle: 'Transfer public Docker images to your GCP Artifact Registry' },
-    download: { title: 'Download', subtitle: 'Pull Docker images from your repository' },
-    settings: { title: 'Settings', subtitle: 'Manage your credentials and preferences' },
-  };
-
-  const t = titles[viewName] || titles.repositories;
-  elements.pageTitle.textContent = t.title;
-  elements.pageSubtitle.textContent = t.subtitle;
-
-  if (viewName === 'upload') {
-    cancelTransferSelection();
-    fetchPopularImages();
-  }
-}
-
-// Event Listeners
+// ─── Events ─────────────────────────────────────────────────────────────────
 function initEventListeners() {
-  // Auth screen
-  elements.validateCredentials.addEventListener('click', validateAndConnect);
+  els.validateCredentials.addEventListener('click', validateAndConnect);
+  els.credentialsInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.ctrlKey) validateAndConnect();
+  });
 
-  elements.credentialsInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && e.ctrlKey) {
-      validateAndConnect();
+  els.logoutBtn?.addEventListener('click', logout);
+  els.clearCredentials?.addEventListener('click', logout);
+
+  window.addEventListener('hashchange', handleRoute);
+
+  els.refreshBtn.addEventListener('click', async () => {
+    const route = parseHash();
+    if (route.name === 'repo') {
+      repoDetail.images = [];
+      repoDetail.packages = [];
+      repoDetail.nextPageToken = null;
+      repoDetail.reachedEnd = false;
+      await loadRepoArtifacts({ reset: true });
+    } else {
+      await fetchRepositories();
     }
   });
 
-  // Logout
-  if (elements.logoutBtn) {
-    elements.logoutBtn.addEventListener('click', logout);
-  }
-
-  if (elements.clearCredentialsBtn) {
-    elements.clearCredentialsBtn.addEventListener('click', logout);
-  }
-
-  // Navigation
-  elements.navItems.forEach(item => {
-    item.addEventListener('click', (e) => {
-      e.preventDefault();
-      switchView(item.dataset.view);
-    });
+  els.repoSearch?.addEventListener('input', (e) => {
+    repoSearchQuery = e.target.value;
+    repoPage = 1;
+    renderRepoList();
   });
 
-  // Refresh
-  elements.refreshBtn.addEventListener('click', fetchRepositories);
-
-  // Search repositories
-  if (elements.repoSearch) {
-    elements.repoSearch.addEventListener('input', (e) => {
-      const query = e.target.value.toLowerCase();
-      const filtered = repositories.filter(r =>
-        r.name.toLowerCase().includes(query) ||
-        r.format.toLowerCase().includes(query) ||
-        r.location.toLowerCase().includes(query)
-      );
-      renderRepositories(filtered);
-    });
-  }
-
-  // Docker repo select
-  if (elements.dockerRepoSelect) {
-    elements.dockerRepoSelect.addEventListener('change', (e) => {
-      const value = e.target.value;
-      if (value) {
-        const [location, name] = value.split('|');
-        fetchDockerImages(location, name);
-      }
-    });
-  }
-
-  // Docker search - wire up real-time filtering
-  if (elements.dockerSearch) {
-    elements.dockerSearch.addEventListener('input', (e) => {
-      dockerSearchTerm = e.target.value.trim();
-      if (allDockerImages.length > 0) {
-        const grouped = groupDockerImages(allDockerImages);
-        renderDockerImagesGrid(grouped);
-      }
-    });
-  }
-
-  // Download repo select
-  if (elements.downloadRepoSelect) {
-    elements.downloadRepoSelect.addEventListener('change', async (e) => {
-      const value = e.target.value;
-      elements.pullCommands.classList.add('hidden');
-
-      if (value) {
-        const [location, name] = value.split('|');
-
-        try {
-          const response = await fetch(`/api/repositories/${location}/${name}/docker-images`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ credentials }),
-          });
-          const data = await response.json();
-
-          if (data.images && data.images.length > 0) {
-            // Group images by base name for cleaner display
-            const grouped = groupDockerImages(data.images);
-
-            // Create options for each grouped image with its tags
-            const options = [];
-            grouped.forEach(group => {
-              const tags = group.allTags.length > 0 ? group.allTags : ['latest'];
-              tags.forEach(tag => {
-                options.push({
-                  location,
-                  repo: name,
-                  imageName: group.name,
-                  tag,
-                  label: `${group.name}:${tag}`
-                });
-              });
-            });
-
-            elements.downloadImageSelect.innerHTML = `
-              <option value="">-- Select an image --</option>
-              ${options.map(opt => `
-                <option value="${opt.location}|${opt.repo}|${opt.imageName}|${opt.tag}">${opt.label}</option>
-              `).join('')}
-            `;
-          } else {
-            elements.downloadImageSelect.innerHTML = '<option value="">No images found</option>';
-          }
-        } catch (error) {
-          elements.downloadImageSelect.innerHTML = '<option value="">Error loading images</option>';
-        }
-      } else {
-        elements.downloadImageSelect.innerHTML = '<option value="">-- Select a repository first --</option>';
-      }
-    });
-  }
-
-  // Download image select - generate proper pull commands
-  if (elements.downloadImageSelect) {
-    elements.downloadImageSelect.addEventListener('change', (e) => {
-      const value = e.target.value;
-      if (value) {
-        const [location, repo, imageName, tag] = value.split('|');
-
-        const registryHost = `${location}-docker.pkg.dev`;
-        const projectId = credentials?.project_id || 'PROJECT_ID';
-
-        const authCmd = `gcloud auth configure-docker ${registryHost} --quiet`;
-        const pullCmd = `docker pull ${registryHost}/${projectId}/${repo}/${imageName}:${tag || 'latest'}`;
-
-        elements.pullAuthCmd.textContent = authCmd;
-        elements.pullImageCmd.textContent = pullCmd;
-        elements.pullCommands.classList.remove('hidden');
-      } else {
-        elements.pullCommands.classList.add('hidden');
-      }
-    });
-  }
-
-  // Docker Hub Search
-  if (elements.searchDockerHub) {
-    elements.searchDockerHub.addEventListener('click', () => {
-      const query = elements.dockerHubSearch.value.trim();
-      if (query) {
-        searchDockerHubApi(query);
-      } else {
-        showToast('Please enter a search term');
-      }
-    });
-  }
-
-  if (elements.dockerHubSearch) {
-    elements.dockerHubSearch.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') {
-        const query = elements.dockerHubSearch.value.trim();
-        if (query) {
-          searchDockerHubApi(query);
-        }
-      }
-    });
-  }
-
-  // Cancel transfer
-  if (elements.cancelTransfer) {
-    elements.cancelTransfer.addEventListener('click', cancelTransferSelection);
-  }
-
-  // Generate transfer commands
-  if (elements.generateTransferCmd) {
-    elements.generateTransferCmd.addEventListener('click', generateTransferCommands);
-  }
-
-  // Copy all commands
-  if (elements.copyAllCommands) {
-    elements.copyAllCommands.addEventListener('click', () => {
-      if (window.allTransferCommands) {
-        copyToClipboard(window.allTransferCommands);
-      }
-    });
-  }
-
-  // Modal close
-  elements.modalClose.addEventListener('click', () => {
-    elements.modal.classList.add('hidden');
+  // Time filters
+  els.timeFilters?.addEventListener('click', async (e) => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    const range = chip.dataset.range;
+    if (range === repoDetail.range) return;
+    repoDetail.range = range;
+    els.timeFilters.querySelectorAll('.chip').forEach((c) => c.classList.toggle('active', c === chip));
+    repoDetail.images = [];
+    repoDetail.nextPageToken = null;
+    repoDetail.reachedEnd = false;
+    await loadRepoArtifacts({ reset: true });
   });
 
-  document.querySelector('.modal-backdrop').addEventListener('click', () => {
-    elements.modal.classList.add('hidden');
+  els.imageSearch?.addEventListener('input', (e) => {
+    repoDetail.search = e.target.value;
+    renderTimeline();
   });
 
-  // Escape key to close modal
+  els.loadMoreBtn?.addEventListener('click', () => loadRepoArtifacts({ reset: false }));
+
+  // Drawer
+  els.drawerClose?.addEventListener('click', closeDrawer);
+  els.drawerBackdrop?.addEventListener('click', closeDrawer);
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      elements.modal.classList.add('hidden');
+    if (e.key === 'Escape') closeDrawer();
+  });
+
+  // Upload
+  els.searchDockerHub?.addEventListener('click', () => {
+    const q = els.dockerHubSearch.value.trim();
+    if (q) searchDockerHubApi(q);
+    else showToast('Please enter a search term');
+  });
+  els.dockerHubSearch?.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+      const q = els.dockerHubSearch.value.trim();
+      if (q) searchDockerHubApi(q);
     }
+  });
+  els.cancelTransfer?.addEventListener('click', cancelTransferSelection);
+  els.generateTransferCmd?.addEventListener('click', generateTransferCommands);
+  els.copyAllCommands?.addEventListener('click', () => {
+    if (window.allTransferCommands) copyToClipboard(window.allTransferCommands);
+  });
+
+  // Download
+  els.downloadRepoSelect?.addEventListener('change', async (e) => {
+    const value = e.target.value;
+    els.pullCommands.classList.add('hidden');
+    if (!value) {
+      els.downloadImageSelect.innerHTML = '<option value="">-- Select a repository first --</option>';
+      els.downloadLoadMore.hidden = true;
+      return;
+    }
+    const [location, name] = value.split('|');
+    downloadState.location = location;
+    downloadState.name = name;
+    await loadDownloadImages({ reset: true });
+  });
+
+  els.downloadLoadMore?.addEventListener('click', () => loadDownloadImages({ reset: false }));
+
+  els.downloadImageSelect?.addEventListener('change', (e) => {
+    const value = e.target.value;
+    if (!value) {
+      els.pullCommands.classList.add('hidden');
+      return;
+    }
+    const [location, repo, imageName, tag] = value.split('|');
+    const registryHost = `${location}-docker.pkg.dev`;
+    const projectId = credentials?.project_id || 'PROJECT_ID';
+    els.pullAuthCmd.textContent = `gcloud auth configure-docker ${registryHost} --quiet`;
+    els.pullImageCmd.textContent = `docker pull ${registryHost}/${projectId}/${repo}/${imageName}:${tag || 'latest'}`;
+    els.pullCommands.classList.remove('hidden');
+  });
+
+  // Copy buttons with data-target
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.copy-btn[data-target]');
+    if (!btn) return;
+    const target = $(btn.dataset.target);
+    if (target) copyToClipboard(target.textContent);
   });
 }
 
-// Initialize
+// ─── Init ───────────────────────────────────────────────────────────────────
 async function init() {
-  // Check if we have stored credentials
   credentials = getStoredCredentials();
+  initEventListeners();
 
   if (credentials) {
-    // Already have credentials, show main app
     showMainApp();
-    await fetchRepositories();
+    if (!location.hash || location.hash === '#') {
+      location.hash = '#/repositories';
+    } else {
+      await handleRoute();
+    }
   } else {
-    // No credentials, show auth screen
     showAuthScreen();
   }
-
-  initEventListeners();
 }
 
-// Make functions global for onclick handlers
-window.viewRepoDetails = viewRepoDetails;
-window.showDockerImagesForRepo = showDockerImagesForRepo;
-window.showPullCommand = showPullCommand;
-window.copyToClipboard = copyToClipboard;
-window.selectImageForTransfer = selectImageForTransfer;
-window.showImageDetails = showImageDetails;
-
-// Start the app
 init();
