@@ -7,11 +7,9 @@ let credentials = null;
 let repositories = [];
 let selectedTransferImage = null;
 
-// Repo list pagination (client-side over lightweight list)
 let repoSearchQuery = '';
 let repoPage = 1;
 
-// Repo detail page state
 const repoDetail = {
   location: null,
   name: null,
@@ -26,13 +24,16 @@ const repoDetail = {
   reachedEnd: false,
 };
 
-// Download view pagination
 const downloadState = {
   location: null,
   name: null,
   images: [],
   nextPageToken: null,
 };
+
+// Command palette state
+let cmdItems = [];
+let cmdActive = 0;
 
 // ─── DOM ────────────────────────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
@@ -87,12 +88,20 @@ const els = {
   settingsProjectId: $('settingsProjectId'),
   settingsServiceAccount: $('settingsServiceAccount'),
   clearCredentials: $('clearCredentials'),
-  drawer: $('drawer'),
-  drawerTitle: $('drawerTitle'),
-  drawerSubtitle: $('drawerSubtitle'),
-  drawerBody: $('drawerBody'),
-  drawerClose: $('drawerClose'),
-  drawerBackdrop: $('drawerBackdrop'),
+  // Full-screen modal
+  imageModal: $('imageModal'),
+  modalTitle: $('modalTitle'),
+  modalSubtitle: $('modalSubtitle'),
+  modalBadge: $('modalBadge'),
+  modalBody: $('modalBody'),
+  modalClose: $('modalClose'),
+  modalScrim: $('modalScrim'),
+  // Command palette
+  cmdPalette: $('cmdPalette'),
+  cmdScrim: $('cmdScrim'),
+  cmdInput: $('cmdInput'),
+  cmdResults: $('cmdResults'),
+  cmdOpenBtn: $('cmdOpenBtn'),
   toast: $('toast'),
   toastMessage: $('toastMessage'),
 };
@@ -189,7 +198,6 @@ function timeBucketLabel(iso) {
 function groupByTimeBucket(items, dateKey = 'uploadedAt') {
   const order = [];
   const map = new Map();
-
   items.forEach((item) => {
     const label = timeBucketLabel(item[dateKey] || item.updatedAt || item.createdAt);
     if (!map.has(label)) {
@@ -198,13 +206,11 @@ function groupByTimeBucket(items, dateKey = 'uploadedAt') {
     }
     map.get(label).push(item);
   });
-
   return order.map((label) => ({ label, items: map.get(label) }));
 }
 
 function groupDockerImages(images) {
   const groups = {};
-
   images.forEach((image) => {
     const baseName = getBaseImageName(image.name);
     if (!groups[baseName]) {
@@ -241,6 +247,14 @@ function generatePullCommand(location, repository, imageName, tag) {
   const projectId = credentials?.project_id || 'PROJECT_ID';
   const tagSuffix = tag ? `:${tag}` : ':latest';
   return `docker pull ${location}-docker.pkg.dev/${projectId}/${repository}/${imageName}${tagSuffix}`;
+}
+
+function syncSearchClear(inputId) {
+  const input = $(inputId);
+  if (!input) return;
+  const clear = document.querySelector(`[data-clear="${inputId}"]`);
+  if (!clear) return;
+  clear.classList.toggle('hidden', !input.value);
 }
 
 // ─── Credentials ────────────────────────────────────────────────────────────
@@ -299,7 +313,6 @@ async function fetchRepositories() {
       <div class="skeleton-row"></div>
       <div class="skeleton-row"></div>
       <div class="skeleton-row"></div>
-      <div class="skeleton-row"></div>
     </div>`;
 
   try {
@@ -320,13 +333,14 @@ async function fetchRepoMeta(location, name) {
     const data = await apiPost(`/api/repositories/${location}/${name}`);
     return data.repository;
   } catch {
-    // Fallback from cached list
-    return repositories.find((r) => r.location === location && r.name === name) || {
-      name,
-      location,
-      format: 'DOCKER',
-      description: '',
-    };
+    return (
+      repositories.find((r) => r.location === location && r.name === name) || {
+        name,
+        location,
+        format: 'DOCKER',
+        description: '',
+      }
+    );
   }
 }
 
@@ -353,9 +367,7 @@ function parseHash() {
   const raw = (location.hash || '#/repositories').replace(/^#\/?/, '');
   const parts = raw.split('/').filter(Boolean);
 
-  if (!parts.length || parts[0] === 'repositories') {
-    return { name: 'repositories' };
-  }
+  if (!parts.length || parts[0] === 'repositories') return { name: 'repositories' };
   if (parts[0] === 'repo' && parts[1] && parts[2]) {
     return {
       name: 'repo',
@@ -363,19 +375,14 @@ function parseHash() {
       repo: decodeURIComponent(parts[2]),
     };
   }
-  if (['upload', 'download', 'settings'].includes(parts[0])) {
-    return { name: parts[0] };
-  }
+  if (['upload', 'download', 'settings'].includes(parts[0])) return { name: parts[0] };
   return { name: 'repositories' };
 }
 
 function navigate(path) {
   if (!path.startsWith('#/')) path = '#/' + path.replace(/^\//, '');
-  if (location.hash === path) {
-    handleRoute();
-  } else {
-    location.hash = path;
-  }
+  if (location.hash === path) handleRoute();
+  else location.hash = path;
 }
 
 function setActiveNav(routeName) {
@@ -413,6 +420,7 @@ function setHeader({ title, subtitle, crumbs = [] }) {
 
 async function handleRoute() {
   if (!credentials) return;
+  closeModal();
   const route = parseHash();
 
   if (route.name === 'repositories') {
@@ -433,7 +441,7 @@ async function handleRoute() {
     showView('repoDetailView');
     setHeader({
       title: route.repo,
-      subtitle: `${route.location}`,
+      subtitle: route.location,
       crumbs: [
         { label: 'Repositories', href: '#/repositories' },
         { label: route.repo },
@@ -508,7 +516,9 @@ function renderRepoList() {
   const pageItems = list.slice(start, start + REPO_PAGE_SIZE);
 
   if (!list.length) {
-    els.repoList.innerHTML = `<div class="empty-state"><p>No repositories found</p></div>`;
+    els.repoList.innerHTML = `<div class="empty-state"><p>${
+      repoSearchQuery ? 'No repositories match your search' : 'No repositories found'
+    }</p></div>`;
     els.repoPagination.innerHTML = '';
     return;
   }
@@ -519,7 +529,7 @@ function renderRepoList() {
     <a class="repo-card" href="#/repo/${encodeURIComponent(repo.location)}/${encodeURIComponent(repo.name)}">
       <div class="repo-card-main">
         <div class="repo-card-icon ${getFormatBadgeClass(repo.format)}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
           </svg>
         </div>
@@ -535,7 +545,11 @@ function renderRepoList() {
             <span title="${escapeHtml(formatDate(repo.updatedAt || repo.createdAt))}">
               Updated ${escapeHtml(relativeDate(repo.updatedAt || repo.createdAt))}
             </span>
-            ${repo.sizeFormatted && repo.sizeFormatted !== 'N/A' ? `<span class="dot">·</span><span>${escapeHtml(repo.sizeFormatted)}</span>` : ''}
+            ${
+              repo.sizeFormatted && repo.sizeFormatted !== 'N/A'
+                ? `<span class="dot">·</span><span>${escapeHtml(repo.sizeFormatted)}</span>`
+                : ''
+            }
           </div>
         </div>
       </div>
@@ -562,6 +576,7 @@ function renderRepoList() {
 }
 
 function renderPagination(container, { page, totalPages, total, pageSize, onPage }) {
+  if (!container) return;
   if (totalPages <= 1) {
     container.innerHTML = total
       ? `<span class="pagination-info">Showing ${total} item${total === 1 ? '' : 's'}</span>`
@@ -575,9 +590,9 @@ function renderPagination(container, { page, totalPages, total, pageSize, onPage
   container.innerHTML = `
     <span class="pagination-info">${from}–${to} of ${total}</span>
     <div class="pagination-controls">
-      <button class="btn btn-secondary btn-small page-btn" data-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}>Previous</button>
+      <button class="btn btn-outline btn-sm page-btn" data-page="${page - 1}" ${page <= 1 ? 'disabled' : ''} type="button">Previous</button>
       <span class="page-indicator">Page ${page} / ${totalPages}</span>
-      <button class="btn btn-secondary btn-small page-btn" data-page="${page + 1}" ${page >= totalPages ? 'disabled' : ''}>Next</button>
+      <button class="btn btn-outline btn-sm page-btn" data-page="${page + 1}" ${page >= totalPages ? 'disabled' : ''} type="button">Next</button>
     </div>`;
 
   container.querySelectorAll('.page-btn').forEach((btn) => {
@@ -588,36 +603,37 @@ function renderPagination(container, { page, totalPages, total, pageSize, onPage
   });
 }
 
-// ─── Repo detail page ───────────────────────────────────────────────────────
+// ─── Repo detail ────────────────────────────────────────────────────────────
 async function openRepoPage(location, name) {
   const isSame = repoDetail.location === location && repoDetail.name === name;
   repoDetail.location = location;
   repoDetail.name = name;
 
-  // Reset content state when navigating to a (possibly new) repo
   if (!isSame) {
     repoDetail.images = [];
     repoDetail.packages = [];
     repoDetail.nextPageToken = null;
     repoDetail.reachedEnd = false;
     repoDetail.search = '';
-    if (els.imageSearch) els.imageSearch.value = '';
+    if (els.imageSearch) {
+      els.imageSearch.value = '';
+      syncSearchClear('imageSearch');
+    }
   }
 
-  // Highlight active time chip
-  els.timeFilters.querySelectorAll('.chip').forEach((chip) => {
+  els.timeFilters.querySelectorAll('.seg').forEach((chip) => {
     chip.classList.toggle('active', chip.dataset.range === repoDetail.range);
   });
 
   els.repoDetailHeader.innerHTML = `
-    <div class="repo-detail-skeleton">
-      <div class="skeleton-line w-40"></div>
-      <div class="skeleton-line w-60"></div>
+    <div class="repo-hero">
+      <div class="skeleton-row" style="margin:0;height:1rem;width:40%"></div>
+      <div class="skeleton-row" style="margin:12px 0 0;height:1.4rem;width:55%"></div>
     </div>`;
   els.timelineContainer.innerHTML = `
-    <div class="loading-state">
-      <div class="loading-spinner"></div>
-      <span>Loading artifacts…</span>
+    <div class="empty-state">
+      <div class="spinner"></div>
+      <p>Loading artifacts…</p>
     </div>`;
   els.timelineMeta.textContent = '';
   els.loadMoreWrap.hidden = true;
@@ -659,7 +675,6 @@ async function openRepoPage(location, name) {
     ],
   });
 
-  // Fresh load for this range
   repoDetail.images = [];
   repoDetail.packages = [];
   repoDetail.nextPageToken = null;
@@ -674,9 +689,9 @@ async function loadRepoArtifacts({ reset = false } = {}) {
   repoDetail.loading = true;
   if (reset) {
     els.timelineContainer.innerHTML = `
-      <div class="loading-state">
-        <div class="loading-spinner"></div>
-        <span>Fetching newest artifacts…</span>
+      <div class="empty-state">
+        <div class="spinner"></div>
+        <p>Fetching newest artifacts…</p>
       </div>`;
     els.loadMoreWrap.hidden = true;
   } else {
@@ -694,9 +709,7 @@ async function loadRepoArtifacts({ reset = false } = {}) {
         pageToken: reset ? null : repoDetail.nextPageToken,
         range: repoDetail.range,
       });
-
       const incoming = data.images || [];
-      // Deduplicate by id
       const seen = new Set(repoDetail.images.map((i) => i.id));
       incoming.forEach((img) => {
         if (!seen.has(img.id)) {
@@ -704,7 +717,6 @@ async function loadRepoArtifacts({ reset = false } = {}) {
           seen.add(img.id);
         }
       });
-
       repoDetail.nextPageToken = data.nextPageToken || null;
       repoDetail.reachedEnd = !data.nextPageToken || data.reachedCutoff;
     } else {
@@ -752,7 +764,6 @@ function getFilteredGroups() {
           g.allTags.some((t) => t.toLowerCase().includes(q))
       );
     }
-    // Attach uploadedAt for time bucketing
     const asItems = groups.map((g) => ({
       ...g,
       uploadedAt: g.latestUpload,
@@ -762,10 +773,12 @@ function getFilteredGroups() {
   }
 
   let pkgs = repoDetail.packages;
-  if (q) {
-    pkgs = pkgs.filter((p) => p.name.toLowerCase().includes(q));
-  }
-  const asItems = pkgs.map((p) => ({ ...p, uploadedAt: p.updatedAt || p.createdAt, _type: 'package' }));
+  if (q) pkgs = pkgs.filter((p) => p.name.toLowerCase().includes(q));
+  const asItems = pkgs.map((p) => ({
+    ...p,
+    uploadedAt: p.updatedAt || p.createdAt,
+    _type: 'package',
+  }));
   return groupByTimeBucket(asItems, 'uploadedAt');
 }
 
@@ -785,19 +798,20 @@ function renderTimeline() {
 
   els.timelineMeta.innerHTML = `
     <span>Showing <strong>${groupCount}</strong> ${isDocker ? 'image group' : 'package'}${groupCount === 1 ? '' : 's'}
-    from <strong>${totalLoaded}</strong> loaded artifact${totalLoaded === 1 ? '' : 's'}
-    · range: <strong>${rangeLabel}</strong>
+    from <strong>${totalLoaded}</strong> loaded
+    · <strong>${rangeLabel}</strong>
+    ${repoDetail.search ? ` · filtered by “${escapeHtml(repoDetail.search)}”` : ''}
     ${repoDetail.reachedEnd ? '' : ' · more available'}</span>`;
 
   if (!buckets.length) {
     els.timelineContainer.innerHTML = `
       <div class="empty-state">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
-          <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="11" cy="11" r="8"></circle>
+          <path d="m21 21-4.35-4.35"></path>
         </svg>
-        <p>No artifacts in this time range</p>
-        <p class="muted-hint">Try a wider range or load more if available.</p>
+        <p>${repoDetail.search ? 'No matches for this filter' : 'No artifacts in this time range'}</p>
+        <p class="muted-hint">${repoDetail.search ? 'Clear search or widen the time range' : 'Try a wider range or load more'}</p>
       </div>`;
     return;
   }
@@ -820,7 +834,7 @@ function renderTimeline() {
               <article class="artifact-row" data-image="${escapeHtml(group.name)}">
                 <div class="artifact-main" role="button" tabindex="0">
                   <div class="artifact-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
                       <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
                       <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
                     </svg>
@@ -863,7 +877,7 @@ function renderTimeline() {
       .join('');
 
     els.timelineContainer.querySelectorAll('.artifact-row').forEach((row) => {
-      const open = () => openImageDrawer(row.dataset.image);
+      const open = () => openImageModal(row.dataset.image);
       row.querySelector('.artifact-main').addEventListener('click', open);
       row.querySelector('.artifact-main').addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -888,16 +902,14 @@ function renderTimeline() {
             <article class="artifact-row package-row">
               <div class="artifact-main">
                 <div class="artifact-icon package">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
                     <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
                   </svg>
                 </div>
                 <div class="artifact-body">
                   <div class="artifact-title-row">
                     <h4>${escapeHtml(pkg.name)}</h4>
-                    <span class="relative-time" title="${escapeHtml(formatDate(pkg.updatedAt))}">
-                      ${escapeHtml(relativeDate(pkg.updatedAt || pkg.createdAt))}
-                    </span>
+                    <span class="relative-time">${escapeHtml(relativeDate(pkg.updatedAt || pkg.createdAt))}</span>
                   </div>
                   <div class="artifact-meta-row">
                     <span>Created ${escapeHtml(formatDate(pkg.createdAt))}</span>
@@ -914,7 +926,8 @@ function renderTimeline() {
   }
 }
 
-function openImageDrawer(imageName) {
+// ─── Full-screen image modal ────────────────────────────────────────────────
+function openImageModal(imageName) {
   const groups = groupDockerImages(repoDetail.images);
   const group = groups.find((g) => g.name === imageName);
   if (!group) return;
@@ -922,167 +935,300 @@ function openImageDrawer(imageName) {
   const location = repoDetail.location;
   const repository = repoDetail.name;
   const tags = group.allTags.length ? group.allTags : ['latest'];
-  // Sort tags: latest first, then semantic-ish, then alpha
   const sortedTags = [...tags].sort((a, b) => {
     if (a === 'latest') return -1;
     if (b === 'latest') return 1;
     return a.localeCompare(b, undefined, { numeric: true });
   });
 
-  // Paginate tags in the drawer (client-side over already-loaded variants)
-  const TAG_PAGE = 20;
-  let tagPage = 0;
+  const variants = [...group.variants].sort(
+    (a, b) => new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0)
+  );
 
   const authCmd = `gcloud auth configure-docker ${location}-docker.pkg.dev --quiet`;
+  const defaultPull = generatePullCommand(location, repository, imageName, sortedTags[0]);
 
-  els.drawerTitle.textContent = imageName;
-  els.drawerSubtitle.textContent = `${repository} · ${location}`;
+  let tagQuery = '';
+  let tagPage = 0;
+  let varPage = 0;
+  const TAG_PAGE = 24;
+  const VAR_PAGE = 12;
 
-  function renderDrawerTags() {
-    const slice = sortedTags.slice(0, (tagPage + 1) * TAG_PAGE);
-    const hasMore = slice.length < sortedTags.length;
-    const tagsEl = els.drawerBody.querySelector('#drawerTags');
-    if (!tagsEl) return;
-    tagsEl.innerHTML = `
-      <div class="drawer-tags-list">
-        ${slice
-          .map((tag) => {
-            const pull = generatePullCommand(location, repository, imageName, tag);
-            return `
-            <div class="drawer-tag-row">
-              <div class="drawer-tag-info">
-                <code class="tag-name">${escapeHtml(tag)}</code>
-              </div>
-              <div class="drawer-tag-actions">
-                <button class="btn btn-secondary btn-small copy-pull" data-cmd="${escapeHtml(pull)}" type="button">Copy pull</button>
-              </div>
-            </div>`;
-          })
-          .join('')}
-      </div>
+  els.modalTitle.textContent = imageName;
+  els.modalSubtitle.textContent = `${repository} · ${location}`;
+  els.modalBadge.textContent = `${sortedTags.length} tags · ${variants.length} variants`;
+  els.modalBadge.className = 'badge docker';
+
+  function filteredTags() {
+    const q = tagQuery.toLowerCase().trim();
+    if (!q) return sortedTags;
+    return sortedTags.filter((t) => t.toLowerCase().includes(q));
+  }
+
+  function renderTags() {
+    const all = filteredTags();
+    const slice = all.slice(0, (tagPage + 1) * TAG_PAGE);
+    const el = els.modalBody.querySelector('#modalTags');
+    if (!el) return;
+
+    if (!all.length) {
+      el.innerHTML = `<div class="empty-state" style="padding:1.5rem"><p>No tags match “${escapeHtml(tagQuery)}”</p></div>`;
+      return;
+    }
+
+    el.innerHTML = `
+      ${slice
+        .map((tag) => {
+          const pull = generatePullCommand(location, repository, imageName, tag);
+          return `
+          <div class="tag-row">
+            <code>${escapeHtml(tag)}</code>
+            <button class="btn btn-outline btn-sm copy-pull" type="button" data-cmd="${escapeHtml(pull)}">Copy pull</button>
+          </div>`;
+        })
+        .join('')}
       ${
-        hasMore
-          ? `<button class="btn btn-secondary btn-small" id="moreTagsBtn" type="button" style="margin-top:12px;">
-              Show more tags (${sortedTags.length - slice.length} left)
+        slice.length < all.length
+          ? `<button class="btn btn-ghost btn-sm" id="moreTagsBtn" type="button" style="margin-top:0.5rem">
+              Show more (${all.length - slice.length} left)
             </button>`
           : ''
       }`;
 
-    tagsEl.querySelectorAll('.copy-pull').forEach((btn) => {
+    el.querySelectorAll('.copy-pull').forEach((btn) => {
       btn.addEventListener('click', () => copyToClipboard(btn.dataset.cmd));
     });
-    const more = tagsEl.querySelector('#moreTagsBtn');
-    if (more) {
-      more.addEventListener('click', () => {
-        tagPage += 1;
-        renderDrawerTags();
-      });
-    }
+    el.querySelector('#moreTagsBtn')?.addEventListener('click', () => {
+      tagPage += 1;
+      renderTags();
+    });
   }
-
-  // Variants sorted by upload time, paginated
-  const variants = [...group.variants].sort((a, b) => {
-    return new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0);
-  });
-  const VAR_PAGE = 10;
-  let varPage = 0;
 
   function renderVariants() {
     const slice = variants.slice(0, (varPage + 1) * VAR_PAGE);
-    const hasMore = slice.length < variants.length;
-    const el = els.drawerBody.querySelector('#drawerVariants');
+    const el = els.modalBody.querySelector('#modalVariants');
     if (!el) return;
     el.innerHTML = `
-      <div class="variants-list">
-        ${slice
-          .map(
-            (v) => `
-          <div class="variant-item">
-            <div class="variant-info">
-              <span class="variant-tags">${escapeHtml((v.tags || []).join(', ') || 'untagged')}</span>
-              <span class="variant-meta">${escapeHtml(v.sizeFormatted)} · ${escapeHtml(relativeDate(v.uploadedAt))}</span>
-            </div>
-          </div>`
-          )
-          .join('')}
-      </div>
+      ${slice
+        .map(
+          (v) => `
+        <div class="variant-item">
+          <div class="variant-info">
+            <span class="variant-tags">${escapeHtml((v.tags || []).join(', ') || 'untagged')}</span>
+            <span class="variant-meta">${escapeHtml(v.sizeFormatted)} · ${escapeHtml(relativeDate(v.uploadedAt))} · ${escapeHtml(formatDate(v.uploadedAt))}</span>
+          </div>
+        </div>`
+        )
+        .join('')}
       ${
-        hasMore
-          ? `<button class="btn btn-secondary btn-small" id="moreVarsBtn" type="button" style="margin-top:12px;">
-              Show more variants
-            </button>`
+        slice.length < variants.length
+          ? `<button class="btn btn-ghost btn-sm" id="moreVarsBtn" type="button" style="margin-top:0.5rem">Show more variants</button>`
           : ''
       }`;
-    const more = el.querySelector('#moreVarsBtn');
-    if (more) {
-      more.addEventListener('click', () => {
-        varPage += 1;
-        renderVariants();
-      });
-    }
+    el.querySelector('#moreVarsBtn')?.addEventListener('click', () => {
+      varPage += 1;
+      renderVariants();
+    });
   }
 
-  const defaultPull = generatePullCommand(location, repository, imageName, sortedTags[0]);
-
-  els.drawerBody.innerHTML = `
-    <div class="drawer-section">
-      <h4>Pull</h4>
-      <div class="command-block compact">
+  els.modalBody.innerHTML = `
+    <div class="modal-grid">
+      <div class="modal-panel modal-span-2">
+        <h3>Pull commands</h3>
         <div class="command-step">
-          <span class="step-number">1</span>
-          <div class="step-content">
-            <p>Authenticate</p>
-            <code>${escapeHtml(authCmd)}</code>
-            <button class="copy-btn" type="button" data-copy="${escapeHtml(authCmd)}">Copy</button>
+          <span class="step-num">1</span>
+          <div class="step-body">
+            <p>Authenticate with Artifact Registry</p>
+            <code class="code-block">${escapeHtml(authCmd)}</code>
+            <button class="btn btn-outline btn-sm" type="button" data-copy="${escapeHtml(authCmd)}">Copy</button>
           </div>
         </div>
-        <div class="command-step">
-          <span class="step-number">2</span>
-          <div class="step-content">
-            <p>Pull (default tag: ${escapeHtml(sortedTags[0])})</p>
-            <code>${escapeHtml(defaultPull)}</code>
-            <button class="copy-btn" type="button" data-copy="${escapeHtml(defaultPull)}">Copy</button>
+        <div class="command-step" style="margin-top:0.85rem">
+          <span class="step-num">2</span>
+          <div class="step-body">
+            <p>Pull default tag <span class="tag">${escapeHtml(sortedTags[0])}</span></p>
+            <code class="code-block">${escapeHtml(defaultPull)}</code>
+            <button class="btn btn-outline btn-sm" type="button" data-copy="${escapeHtml(defaultPull)}">Copy</button>
           </div>
         </div>
       </div>
-    </div>
 
-    <div class="drawer-section">
-      <div class="section-head">
-        <h4>Tags</h4>
-        <span class="muted-hint">${sortedTags.length} total</span>
+      <div class="modal-panel">
+        <h3>Tags <span class="count">${sortedTags.length}</span></h3>
+        <div class="search-field tag-search-row" style="margin-bottom:0.75rem;min-width:0;width:100%">
+          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"></circle>
+            <path d="m21 21-4.35-4.35"></path>
+          </svg>
+          <input type="search" id="modalTagSearch" class="search-input" placeholder="Search tags…" autocomplete="off">
+        </div>
+        <div id="modalTags"></div>
       </div>
-      <div id="drawerTags"></div>
-    </div>
 
-    <div class="drawer-section">
-      <div class="section-head">
-        <h4>Variants by time</h4>
-        <span class="muted-hint">${variants.length} loaded</span>
+      <div class="modal-panel">
+        <h3>Variants by time <span class="count">${variants.length} loaded</span></h3>
+        <div id="modalVariants"></div>
       </div>
-      <div id="drawerVariants"></div>
-    </div>
-  `;
+    </div>`;
 
-  els.drawerBody.querySelectorAll('[data-copy]').forEach((btn) => {
+  els.modalBody.querySelectorAll('[data-copy]').forEach((btn) => {
     btn.addEventListener('click', () => copyToClipboard(btn.dataset.copy));
   });
 
-  renderDrawerTags();
+  const tagSearch = els.modalBody.querySelector('#modalTagSearch');
+  tagSearch?.addEventListener('input', (e) => {
+    tagQuery = e.target.value;
+    tagPage = 0;
+    renderTags();
+  });
+
+  renderTags();
   renderVariants();
-  openDrawer();
+  showModal();
+  setTimeout(() => tagSearch?.focus(), 50);
 }
 
-function openDrawer() {
-  els.drawer.classList.remove('hidden');
-  els.drawer.setAttribute('aria-hidden', 'false');
-  document.body.classList.add('drawer-open');
+function showModal() {
+  els.imageModal.classList.remove('hidden');
+  els.imageModal.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('modal-open');
 }
 
-function closeDrawer() {
-  els.drawer.classList.add('hidden');
-  els.drawer.setAttribute('aria-hidden', 'true');
-  document.body.classList.remove('drawer-open');
+function closeModal() {
+  if (!els.imageModal || els.imageModal.classList.contains('hidden')) return;
+  els.imageModal.classList.add('hidden');
+  els.imageModal.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('modal-open');
+}
+
+// ─── Command palette ────────────────────────────────────────────────────────
+function buildCmdItems(query) {
+  const q = (query || '').toLowerCase().trim();
+  const items = [];
+
+  const pages = [
+    { id: 'p-repos', title: 'Repositories', sub: 'Browse all repositories', href: '#/repositories', group: 'Navigate' },
+    { id: 'p-upload', title: 'Upload', sub: 'Transfer from Docker Hub', href: '#/upload', group: 'Navigate' },
+    { id: 'p-download', title: 'Download', sub: 'Generate pull commands', href: '#/download', group: 'Navigate' },
+    { id: 'p-settings', title: 'Settings', sub: 'Credentials & account', href: '#/settings', group: 'Navigate' },
+  ];
+
+  pages.forEach((p) => {
+    if (!q || p.title.toLowerCase().includes(q) || p.sub.toLowerCase().includes(q)) {
+      items.push(p);
+    }
+  });
+
+  const repos = repositories
+    .filter((r) => {
+      if (!q) return true;
+      return (
+        r.name.toLowerCase().includes(q) ||
+        (r.location || '').toLowerCase().includes(q) ||
+        (r.format || '').toLowerCase().includes(q) ||
+        (r.description || '').toLowerCase().includes(q)
+      );
+    })
+    .slice(0, 12)
+    .map((r) => ({
+      id: `r-${r.location}-${r.name}`,
+      title: r.name,
+      sub: `${r.format} · ${r.location}`,
+      href: `#/repo/${encodeURIComponent(r.location)}/${encodeURIComponent(r.name)}`,
+      group: 'Repositories',
+    }));
+
+  items.push(...repos);
+
+  // On repo page: jump to filter
+  if (repoDetail.name && q) {
+    items.unshift({
+      id: 'filter-images',
+      title: `Filter images for “${query}”`,
+      sub: `In ${repoDetail.name}`,
+      action: 'filter-images',
+      query,
+      group: 'Actions',
+    });
+  }
+
+  return items;
+}
+
+function openCmdPalette() {
+  if (!credentials) return;
+  els.cmdPalette.classList.remove('hidden');
+  els.cmdPalette.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('cmd-open');
+  els.cmdInput.value = '';
+  cmdActive = 0;
+  renderCmdResults('');
+  setTimeout(() => els.cmdInput.focus(), 10);
+}
+
+function closeCmdPalette() {
+  if (!els.cmdPalette || els.cmdPalette.classList.contains('hidden')) return;
+  els.cmdPalette.classList.add('hidden');
+  els.cmdPalette.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('cmd-open');
+}
+
+function renderCmdResults(query) {
+  cmdItems = buildCmdItems(query);
+  if (cmdActive >= cmdItems.length) cmdActive = Math.max(0, cmdItems.length - 1);
+
+  if (!cmdItems.length) {
+    els.cmdResults.innerHTML = `<div class="cmd-empty">No results for “${escapeHtml(query)}”</div>`;
+    return;
+  }
+
+  let html = '';
+  let lastGroup = null;
+  cmdItems.forEach((item, i) => {
+    if (item.group !== lastGroup) {
+      lastGroup = item.group;
+      html += `<div class="cmd-group-label">${escapeHtml(item.group)}</div>`;
+    }
+    html += `
+      <button type="button" class="cmd-item ${i === cmdActive ? 'active' : ''}" data-index="${i}">
+        <span class="cmd-item-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+          </svg>
+        </span>
+        <span class="cmd-item-main">
+          <span class="cmd-item-title">${escapeHtml(item.title)}</span>
+          <span class="cmd-item-sub">${escapeHtml(item.sub || '')}</span>
+        </span>
+      </button>`;
+  });
+  els.cmdResults.innerHTML = html;
+
+  els.cmdResults.querySelectorAll('.cmd-item').forEach((btn) => {
+    btn.addEventListener('mouseenter', () => {
+      cmdActive = parseInt(btn.dataset.index, 10);
+      els.cmdResults.querySelectorAll('.cmd-item').forEach((b, i) => {
+        b.classList.toggle('active', i === cmdActive);
+      });
+    });
+    btn.addEventListener('click', () => runCmdItem(cmdItems[parseInt(btn.dataset.index, 10)]));
+  });
+}
+
+function runCmdItem(item) {
+  if (!item) return;
+  closeCmdPalette();
+  if (item.action === 'filter-images') {
+    if (els.imageSearch) {
+      els.imageSearch.value = item.query || '';
+      repoDetail.search = item.query || '';
+      syncSearchClear('imageSearch');
+      renderTimeline();
+      els.imageSearch.focus();
+    }
+    return;
+  }
+  if (item.href) navigate(item.href);
 }
 
 // ─── Upload / Docker Hub ────────────────────────────────────────────────────
@@ -1119,8 +1265,8 @@ function renderPopularImages(images) {
 
 async function searchDockerHubApi(query) {
   els.searchResultsBody.innerHTML = `
-    <tr class="loading-row"><td colspan="5">
-      <div class="loading-spinner"></div><span>Searching Docker Hub…</span>
+    <tr><td colspan="5" style="text-align:center;padding:2rem">
+      <div class="spinner" style="margin:0 auto 0.5rem"></div>Searching…
     </td></tr>`;
   els.searchResults.classList.remove('hidden');
 
@@ -1131,13 +1277,13 @@ async function searchDockerHubApi(query) {
     renderSearchResults(data.results || []);
     showToast(`Found ${data.count} results`);
   } catch (error) {
-    els.searchResultsBody.innerHTML = `<tr class="empty-row"><td colspan="5">Error: ${escapeHtml(error.message)}</td></tr>`;
+    els.searchResultsBody.innerHTML = `<tr><td colspan="5">Error: ${escapeHtml(error.message)}</td></tr>`;
   }
 }
 
 function renderSearchResults(results) {
   if (!results.length) {
-    els.searchResultsBody.innerHTML = `<tr class="empty-row"><td colspan="5">No images found</td></tr>`;
+    els.searchResultsBody.innerHTML = `<tr><td colspan="5">No images found</td></tr>`;
     return;
   }
 
@@ -1145,14 +1291,14 @@ function renderSearchResults(results) {
     .map(
       (r) => `
     <tr>
-      <td><strong style="color: var(--text-primary)">${escapeHtml(r.name)}</strong></td>
-      <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-        ${escapeHtml(r.description || '-')}
+      <td><strong style="color:var(--foreground)">${escapeHtml(r.name)}</strong></td>
+      <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        ${escapeHtml(r.description || '—')}
       </td>
-      <td><span class="stars">⭐ ${formatStars(r.stars)}</span></td>
-      <td>${r.isOfficial ? '<span class="official-mark">Official</span>' : '-'}</td>
+      <td><span class="stars">★ ${formatStars(r.stars)}</span></td>
+      <td>${r.isOfficial ? '<span class="official-mark">Official</span>' : '—'}</td>
       <td>
-        <button class="btn btn-primary btn-small select-transfer" data-image="${escapeHtml(r.name)}" type="button">Select</button>
+        <button class="btn btn-primary btn-sm select-transfer" data-image="${escapeHtml(r.name)}" type="button">Select</button>
       </td>
     </tr>`
     )
@@ -1187,17 +1333,31 @@ function populateRepoSelects() {
     .join('');
 
   if (els.downloadRepoSelect) {
-    els.downloadRepoSelect.innerHTML = `<option value="">-- Select a repository --</option>${opts}`;
+    els.downloadRepoSelect.innerHTML = `<option value="">Select a repository…</option>${opts}`;
   }
   if (els.transferRepoSelect) {
-    els.transferRepoSelect.innerHTML = `<option value="">-- Select a Docker repository --</option>${opts}`;
+    els.transferRepoSelect.innerHTML = `<option value="">Select a Docker repository…</option>${opts}`;
   }
 }
 
 async function selectImageForTransfer(imageName) {
   selectedTransferImage = imageName;
-  document.querySelector('.popular-images-section')?.classList.add('hidden');
-  document.querySelector('.search-section')?.classList.add('hidden');
+  document.querySelector('.section')?.classList.add('hidden');
+  document.querySelector('#uploadView .card:not(.transfer-section .card)')?.classList.add('hidden');
+  // Hide popular + hub search card more reliably
+  document.querySelectorAll('#uploadView > .section, #uploadView > .card').forEach((el) => {
+    if (!el.closest('#transferSection') && el.id !== 'transferSection') {
+      if (!el.classList.contains('transfer-section')) el.classList.add('hidden');
+    }
+  });
+  // Simpler: hide first two children of upload view that aren't transfer
+  const uploadView = $('uploadView');
+  if (uploadView) {
+    [...uploadView.children].forEach((child) => {
+      if (child.id !== 'transferSection') child.classList.add('hidden');
+    });
+  }
+
   els.transferSection.classList.remove('hidden');
   els.transferSource.textContent = imageName;
   els.transferDest.textContent = 'Select repository…';
@@ -1219,7 +1379,10 @@ async function selectImageForTransfer(imageName) {
     });
     els.transferTagSelect.innerHTML = sorted
       .slice(0, 50)
-      .map((t) => `<option value="${escapeHtml(t.name)}">${escapeHtml(t.name)} (${escapeHtml(t.sizeFormatted)})</option>`)
+      .map(
+        (t) =>
+          `<option value="${escapeHtml(t.name)}">${escapeHtml(t.name)} (${escapeHtml(t.sizeFormatted)})</option>`
+      )
       .join('');
   } else {
     els.transferTagSelect.innerHTML = '<option value="latest">latest</option>';
@@ -1230,8 +1393,12 @@ async function selectImageForTransfer(imageName) {
 
 function cancelTransferSelection() {
   selectedTransferImage = null;
-  document.querySelector('.popular-images-section')?.classList.remove('hidden');
-  document.querySelector('.search-section')?.classList.remove('hidden');
+  const uploadView = $('uploadView');
+  if (uploadView) {
+    [...uploadView.children].forEach((child) => {
+      if (child.id !== 'transferSection') child.classList.remove('hidden');
+    });
+  }
   els.transferSection?.classList.add('hidden');
 }
 
@@ -1266,12 +1433,11 @@ async function generateTransferCommands() {
       .map(
         (step) => `
       <div class="command-step">
-        <span class="step-number">${step.step}</span>
-        <div class="step-content">
-          <p><strong>${escapeHtml(step.title)}</strong></p>
-          <p>${escapeHtml(step.description)}</p>
-          <code>${escapeHtml(step.command)}</code>
-          <button class="copy-btn" type="button" data-copy="${escapeHtml(step.command)}">Copy</button>
+        <span class="step-num">${step.step}</span>
+        <div class="step-body">
+          <p><strong>${escapeHtml(step.title)}</strong> — ${escapeHtml(step.description)}</p>
+          <code class="code-block">${escapeHtml(step.command)}</code>
+          <button class="btn btn-outline btn-sm" type="button" data-copy="${escapeHtml(step.command)}">Copy</button>
         </div>
       </div>`
       )
@@ -1289,7 +1455,7 @@ async function generateTransferCommands() {
   }
 }
 
-// ─── Download (paginated) ───────────────────────────────────────────────────
+// ─── Download ───────────────────────────────────────────────────────────────
 async function loadDownloadImages({ reset = false } = {}) {
   if (!downloadState.location) return;
 
@@ -1307,15 +1473,13 @@ async function loadDownloadImages({ reset = false } = {}) {
       range: 'all',
     });
 
-    const incoming = data.images || [];
-    downloadState.images.push(...incoming);
+    downloadState.images.push(...(data.images || []));
     downloadState.nextPageToken = data.nextPageToken || null;
 
     const grouped = groupDockerImages(downloadState.images);
     const options = [];
     grouped.forEach((group) => {
       const tags = group.allTags.length ? group.allTags : ['latest'];
-      // Only first few tags per image to keep select usable
       tags.slice(0, 8).forEach((tag) => {
         options.push({
           location: downloadState.location,
@@ -1328,7 +1492,7 @@ async function loadDownloadImages({ reset = false } = {}) {
     });
 
     els.downloadImageSelect.innerHTML = `
-      <option value="">-- Select an image --</option>
+      <option value="">Select an image…</option>
       ${options
         .map(
           (o) =>
@@ -1360,8 +1524,7 @@ async function validateAndConnect() {
   }
 
   els.validateCredentials.disabled = true;
-  els.validateCredentials.innerHTML =
-    '<div class="loading-spinner" style="width:20px;height:20px;margin-right:8px;"></div> Validating…';
+  els.validateCredentials.textContent = 'Validating…';
   hideAuthError();
 
   try {
@@ -1375,12 +1538,8 @@ async function validateAndConnect() {
     if (data.valid) {
       storeCredentials(creds);
       showMainApp();
-      if (!location.hash || location.hash === '#') {
-        // hashchange will run handleRoute once
-        location.hash = '#/repositories';
-      } else {
-        await handleRoute();
-      }
+      if (!location.hash || location.hash === '#') location.hash = '#/repositories';
+      else await handleRoute();
       showToast('Connected successfully');
     } else {
       showAuthError(data.error || 'Failed to validate credentials');
@@ -1389,12 +1548,7 @@ async function validateAndConnect() {
     showAuthError('Connection failed: ' + e.message);
   } finally {
     els.validateCredentials.disabled = false;
-    els.validateCredentials.innerHTML = `
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-        <polyline points="22 4 12 14.01 9 11.01"></polyline>
-      </svg>
-      Validate &amp; Connect`;
+    els.validateCredentials.textContent = 'Validate & connect';
   }
 }
 
@@ -1410,6 +1564,8 @@ function hideAuthError() {
 function logout() {
   clearStoredCredentials();
   repositories = [];
+  closeModal();
+  closeCmdPalette();
   showAuthScreen();
   els.credentialsInput.value = '';
   showToast('Disconnected');
@@ -1447,20 +1603,34 @@ function initEventListeners() {
     }
   });
 
+  // Repo search
   els.repoSearch?.addEventListener('input', (e) => {
     repoSearchQuery = e.target.value;
     repoPage = 1;
+    syncSearchClear('repoSearch');
     renderRepoList();
   });
 
-  // Time filters
+  // Clear buttons
+  document.querySelectorAll('[data-clear]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.clear;
+      const input = $(id);
+      if (!input) return;
+      input.value = '';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.focus();
+    });
+  });
+
+  // Time filters (segmented)
   els.timeFilters?.addEventListener('click', async (e) => {
-    const chip = e.target.closest('.chip');
+    const chip = e.target.closest('.seg');
     if (!chip) return;
     const range = chip.dataset.range;
     if (range === repoDetail.range) return;
     repoDetail.range = range;
-    els.timeFilters.querySelectorAll('.chip').forEach((c) => c.classList.toggle('active', c === chip));
+    els.timeFilters.querySelectorAll('.seg').forEach((c) => c.classList.toggle('active', c === chip));
     repoDetail.images = [];
     repoDetail.nextPageToken = null;
     repoDetail.reachedEnd = false;
@@ -1469,16 +1639,67 @@ function initEventListeners() {
 
   els.imageSearch?.addEventListener('input', (e) => {
     repoDetail.search = e.target.value;
+    syncSearchClear('imageSearch');
     renderTimeline();
   });
 
   els.loadMoreBtn?.addEventListener('click', () => loadRepoArtifacts({ reset: false }));
 
-  // Drawer
-  els.drawerClose?.addEventListener('click', closeDrawer);
-  els.drawerBackdrop?.addEventListener('click', closeDrawer);
+  // Full-screen modal
+  els.modalClose?.addEventListener('click', closeModal);
+  els.modalScrim?.addEventListener('click', closeModal);
+
+  // Command palette
+  els.cmdOpenBtn?.addEventListener('click', openCmdPalette);
+  els.cmdScrim?.addEventListener('click', closeCmdPalette);
+  els.cmdInput?.addEventListener('input', (e) => {
+    cmdActive = 0;
+    renderCmdResults(e.target.value);
+  });
+  els.cmdInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      cmdActive = Math.min(cmdActive + 1, cmdItems.length - 1);
+      renderCmdResults(els.cmdInput.value);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      cmdActive = Math.max(cmdActive - 1, 0);
+      renderCmdResults(els.cmdInput.value);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      runCmdItem(cmdItems[cmdActive]);
+    } else if (e.key === 'Escape') {
+      closeCmdPalette();
+    }
+  });
+
+  // Global keyboard
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeDrawer();
+    const meta = e.metaKey || e.ctrlKey;
+    const tag = (e.target.tagName || '').toLowerCase();
+    const typing = tag === 'input' || tag === 'textarea' || e.target.isContentEditable;
+
+    if (meta && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      if (els.cmdPalette.classList.contains('hidden')) openCmdPalette();
+      else closeCmdPalette();
+      return;
+    }
+
+    if (e.key === 'Escape') {
+      if (!els.cmdPalette.classList.contains('hidden')) {
+        closeCmdPalette();
+        return;
+      }
+      closeModal();
+      return;
+    }
+
+    // Focus image filter with /
+    if (!typing && e.key === '/' && parseHash().name === 'repo') {
+      e.preventDefault();
+      els.imageSearch?.focus();
+    }
   });
 
   // Upload
@@ -1504,7 +1725,7 @@ function initEventListeners() {
     const value = e.target.value;
     els.pullCommands.classList.add('hidden');
     if (!value) {
-      els.downloadImageSelect.innerHTML = '<option value="">-- Select a repository first --</option>';
+      els.downloadImageSelect.innerHTML = '<option value="">Select a repository first…</option>';
       els.downloadLoadMore.hidden = true;
       return;
     }
@@ -1530,7 +1751,6 @@ function initEventListeners() {
     els.pullCommands.classList.remove('hidden');
   });
 
-  // Copy buttons with data-target
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('.copy-btn[data-target]');
     if (!btn) return;
@@ -1546,11 +1766,8 @@ async function init() {
 
   if (credentials) {
     showMainApp();
-    if (!location.hash || location.hash === '#') {
-      location.hash = '#/repositories';
-    } else {
-      await handleRoute();
-    }
+    if (!location.hash || location.hash === '#') location.hash = '#/repositories';
+    else await handleRoute();
   } else {
     showAuthScreen();
   }
