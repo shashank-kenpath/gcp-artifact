@@ -306,18 +306,132 @@ function extractDigestFromUri(uri) {
   return m ? m[0].toLowerCase() : null;
 }
 
-function generatePullCommand(location, repository, imageName, tag) {
+/** Git commit tags are 7–40 hex chars (not docker digests). */
+function isGitCommitTag(tag) {
+  return /^[0-9a-f]{7,40}$/i.test(String(tag || ''));
+}
+
+/** Channel / env tags (main, bh-dev, …) — not commit SHAs. */
+function isChannelTag(tag) {
+  const t = String(tag || '');
+  if (!t || isGitCommitTag(t)) return false;
+  // skip pure numbers that aren't commits
+  return true;
+}
+
+/** Family key: main-latest → main, bh-dev-latest → bh-dev */
+function channelFamily(tag) {
+  if (!isChannelTag(tag)) return null;
+  return String(tag).replace(/-latest$/i, '').toLowerCase();
+}
+
+function getGitCommitFromGroup(g) {
+  const commits = (g.tags || []).filter(isGitCommitTag);
+  // Prefer full 40-char SHAs
+  commits.sort((a, b) => b.length - a.length);
+  return commits[0] || null;
+}
+
+function getChannelFamiliesOnGroup(g) {
+  const set = new Set();
+  (g.tags || []).forEach((t) => {
+    const f = channelFamily(t);
+    if (f) set.add(f);
+  });
+  return Array.from(set);
+}
+
+/** Discover channel families present across digests (main, bh-dev, …). */
+function discoverChannels(digestGroups) {
+  const map = new Map(); // family → { family, tags: Set, current: group|null }
+  digestGroups.forEach((g) => {
+    (g.tags || []).forEach((t) => {
+      if (!isChannelTag(t)) return;
+      const fam = channelFamily(t);
+      if (!fam) return;
+      if (!map.has(fam)) map.set(fam, { family: fam, tags: new Set(), current: null });
+      const entry = map.get(fam);
+      entry.tags.add(t);
+      // Prefer exact family name as primary tag
+      if (!entry.current) entry.current = g;
+    });
+  });
+
+  // Attach current group: digest that has the base tag or any family tag (newest already sorted)
+  for (const entry of map.values()) {
+    const base = entry.family;
+    entry.current =
+      digestGroups.find((g) =>
+        (g.tags || []).some((t) => channelFamily(t) === base)
+      ) || null;
+    entry.primaryTag = (entry.tags.has(base) ? base : Array.from(entry.tags)[0]) || base;
+    entry.aliasTags = Array.from(entry.tags).sort();
+  }
+
+  return Array.from(map.values()).sort((a, b) => a.family.localeCompare(b.family));
+}
+
+/**
+ * Builds older than current for a channel, skipping digests that currently
+ * belong to a *different* channel family (so previous main ≠ current bh-dev).
+ */
+function channelRollbackCandidates(channelFamilyName, digestGroups) {
+  const fam = String(channelFamilyName || '').toLowerCase();
+  const currentIdx = digestGroups.findIndex((g) =>
+    (g.tags || []).some((t) => channelFamily(t) === fam)
+  );
+  if (currentIdx < 0) return { current: null, previous: null, older: [] };
+
+  const current = digestGroups[currentIdx];
+  const older = [];
+
+  for (let i = currentIdx + 1; i < digestGroups.length; i++) {
+    const g = digestGroups[i];
+    const families = getChannelFamiliesOnGroup(g);
+    // Skip digests currently owned by another channel (e.g. bh-dev while viewing main)
+    const otherOwner = families.some((f) => f !== fam);
+    if (otherOwner) continue;
+    older.push(g);
+  }
+
+  return {
+    current,
+    previous: older[0] || null,
+    older,
+  };
+}
+
+function registryImagePath(location, repository, imageName) {
   const projectId = credentials?.project_id || 'PROJECT_ID';
+  return `${location}-docker.pkg.dev/${projectId}/${repository}/${imageName}`;
+}
+
+function generatePullCommand(location, repository, imageName, tag) {
   const tagSuffix = tag ? `:${tag}` : ':latest';
-  return `docker pull ${location}-docker.pkg.dev/${projectId}/${repository}/${imageName}${tagSuffix}`;
+  return `docker pull ${registryImagePath(location, repository, imageName)}${tagSuffix}`;
 }
 
 /** Immutable pull — preferred for rollback (tag may move later). */
 function generatePullByDigest(location, repository, imageName, digest) {
-  const projectId = credentials?.project_id || 'PROJECT_ID';
   const d = digest && digest.startsWith('sha256:') ? digest : digest ? `sha256:${digest}` : '';
   if (!d) return generatePullCommand(location, repository, imageName, 'latest');
-  return `docker pull ${location}-docker.pkg.dev/${projectId}/${repository}/${imageName}@${d}`;
+  return `docker pull ${registryImagePath(location, repository, imageName)}@${d}`;
+}
+
+/** Commands to re-point a channel tag (and -latest) at an older digest. */
+function generateRetagChannelCommands(location, repository, imageName, digest, channelFamilyName, aliasTags = []) {
+  const path = registryImagePath(location, repository, imageName);
+  const d = digest && digest.startsWith('sha256:') ? digest : `sha256:${digest}`;
+  const tags = new Set([channelFamilyName, `${channelFamilyName}-latest`, ...aliasTags]);
+  // Only keep tags that belong to this family
+  const finalTags = Array.from(tags).filter((t) => channelFamily(t) === channelFamilyName.toLowerCase() || t === channelFamilyName || t === `${channelFamilyName}-latest`);
+
+  const lines = [
+    `docker pull ${path}@${d}`,
+    ...finalTags.map((t) => `docker tag ${path}@${d} ${path}:${t}`),
+    ...finalTags.map((t) => `docker push ${path}:${t}`),
+  ];
+  return lines.join('\n');
 }
 
 function syncSearchClear(inputId) {
@@ -1013,199 +1127,367 @@ function openImageModal(imageName) {
   const location = repoDetail.location;
   const repository = repoDetail.name;
 
-  // Digest groups sorted by update time — one group = one rollback commit
+  // Digest groups sorted by update time — one group = one image build
   const digestGroups = buildTagDigestGroups(group.variants);
+  const channels = discoverChannels(digestGroups);
   const allTagNames = digestGroups.flatMap((g) => g.tags);
-  const newest = digestGroups[0];
-  const defaultTag = newest?.tags?.[0] || allTagNames[0] || 'latest';
 
   const authCmd = `gcloud auth configure-docker ${location}-docker.pkg.dev --quiet`;
-  const defaultPull = generatePullCommand(location, repository, imageName, defaultTag);
-  const defaultDigestPull = newest?.digest
-    ? generatePullByDigest(location, repository, imageName, newest.digest)
-    : defaultPull;
 
-  let tagQuery = '';
+  // View: 'all' | channel family name (main, bh-dev, …)
+  let activeView = channels[0]?.family || 'all';
   let digPage = 0;
-  const DIG_PAGE = 12;
+  let tagQuery = '';
+  const DIG_PAGE = 10;
 
   els.modalTitle.textContent = imageName;
   els.modalSubtitle.textContent = `${repository} · ${location}`;
-  els.modalBadge.textContent = `${allTagNames.length} tags · ${digestGroups.length} commits`;
+  els.modalBadge.textContent = `${channels.length} channels · ${digestGroups.length} builds`;
   els.modalBadge.className = 'badge docker';
 
-  function filteredDigestGroups() {
-    const q = tagQuery.toLowerCase().trim();
-    if (!q) return digestGroups;
-    return digestGroups.filter(
-      (g) =>
-        g.tags.some((t) => t.toLowerCase().includes(q)) ||
-        (g.digest || '').toLowerCase().includes(q) ||
-        (g.shortDigest || '').toLowerCase().includes(q)
-    );
+  function enrichGroup(g) {
+    const gitCommit = getGitCommitFromGroup(g);
+    return {
+      ...g,
+      gitCommit,
+      gitShort: gitCommit ? gitCommit.slice(0, 12) : null,
+    };
   }
 
-  function renderDigestList() {
-    const all = filteredDigestGroups();
-    const slice = all.slice(0, (digPage + 1) * DIG_PAGE);
-    const el = els.modalBody.querySelector('#modalDigestList');
+  function renderBuildCard(g, { badge, channelForRetag } = {}) {
+    const e = enrichGroup(g);
+    const when = e.updatedAt || e.uploadedAt;
+    const pullDigest = generatePullByDigest(location, repository, imageName, e.digest);
+    const pullGit = e.gitCommit
+      ? generatePullCommand(location, repository, imageName, e.gitCommit)
+      : null;
+    const channelTags = (e.tags || []).filter(isChannelTag);
+    const retagCmd =
+      channelForRetag && e.digest
+        ? generateRetagChannelCommands(
+            location,
+            repository,
+            imageName,
+            e.digest,
+            channelForRetag,
+            channels.find((c) => c.family === channelForRetag)?.aliasTags || []
+          )
+        : null;
+
+    return `
+      <article class="digest-card ${badge === 'current' ? 'is-newest' : ''} ${badge === 'previous' ? 'is-previous' : ''}">
+        <header class="digest-card-head">
+          <div class="digest-card-title">
+            ${badge === 'current' ? '<span class="pill-live">Current</span>' : ''}
+            ${badge === 'previous' ? '<span class="pill-prev">Previous</span>' : ''}
+            ${badge === 'older' ? '<span class="pill-older">Older</span>' : ''}
+            <span class="digest-time" title="${escapeHtml(formatDate(when))}">
+              ${escapeHtml(relativeDate(when))}
+              <span class="digest-time-abs">· ${escapeHtml(formatDate(when))}</span>
+            </span>
+          </div>
+          <span class="digest-size">${escapeHtml(e.sizeFormatted || 'N/A')}</span>
+        </header>
+
+        <div class="digest-id-row">
+          <span class="digest-label">Git commit</span>
+          ${
+            e.gitCommit
+              ? `<code class="digest-id git" title="${escapeHtml(e.gitCommit)}">${escapeHtml(e.gitShort)}<span class="digest-id-rest">${escapeHtml(e.gitCommit.slice(12))}</span></code>
+                 <button class="btn btn-ghost btn-sm" type="button" data-copy="${escapeHtml(e.gitCommit)}">Copy</button>`
+              : `<span class="muted-hint">No git-sha tag on this build</span>`
+          }
+        </div>
+
+        <div class="digest-id-row">
+          <span class="digest-label">Digest</span>
+          <code class="digest-id" title="${escapeHtml(e.digest || '')}">${escapeHtml(e.shortDigest || '—')}<span class="digest-id-rest">${escapeHtml(
+            e.digest && e.digest.startsWith('sha256:') ? e.digest.slice(7 + 12) : ''
+          )}</span></code>
+          <button class="btn btn-ghost btn-sm" type="button" data-copy="${escapeHtml(e.digest || '')}">Copy</button>
+        </div>
+
+        ${
+          channelTags.length
+            ? `<div class="digest-tags-row">
+                <span class="digest-label">Channels</span>
+                <div class="digest-tags">${channelTags.map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join('')}</div>
+              </div>`
+            : ''
+        }
+
+        <div class="digest-actions">
+          <button class="btn btn-primary btn-sm" type="button" data-copy="${escapeHtml(pullDigest)}" title="Immutable image digest">
+            Pull by digest
+          </button>
+          ${
+            pullGit
+              ? `<button class="btn btn-outline btn-sm" type="button" data-copy="${escapeHtml(pullGit)}" title="Pull git commit tag">
+                  Pull :${escapeHtml(e.gitShort)}
+                </button>`
+              : ''
+          }
+          ${
+            retagCmd
+              ? `<button class="btn btn-outline btn-sm" type="button" data-copy="${escapeHtml(retagCmd)}" title="Pull + retag channel to this build">
+                  Retag as ${escapeHtml(channelForRetag)}
+                </button>`
+              : ''
+          }
+        </div>
+      </article>`;
+  }
+
+  function wireCopy(root) {
+    root?.querySelectorAll('[data-copy]').forEach((btn) => {
+      btn.addEventListener('click', () => copyToClipboard(btn.dataset.copy));
+    });
+  }
+
+  function renderChannelView(family) {
+    const el = els.modalBody.querySelector('#modalMainView');
     if (!el) return;
 
-    if (!all.length) {
-      el.innerHTML = `<div class="empty-state" style="padding:1.5rem"><p>No tags or digests match “${escapeHtml(tagQuery)}”</p></div>`;
+    const ch = channels.find((c) => c.family === family);
+    const { current, previous, older } = channelRollbackCandidates(family, digestGroups);
+    const primary = ch?.primaryTag || family;
+    const aliases = ch?.aliasTags || [family];
+
+    if (!current) {
+      el.innerHTML = `<div class="empty-state"><p>No build currently tagged <strong>${escapeHtml(family)}</strong></p></div>`;
       return;
     }
 
+    const currentGit = getGitCommitFromGroup(current);
+    const prevGit = previous ? getGitCommitFromGroup(previous) : null;
+    const pullCurrentTag = generatePullCommand(location, repository, imageName, primary);
+    const pullCurrentDigest = generatePullByDigest(location, repository, imageName, current.digest);
+    const pullPrevDigest = previous
+      ? generatePullByDigest(location, repository, imageName, previous.digest)
+      : null;
+    const retagPrev = previous
+      ? generateRetagChannelCommands(location, repository, imageName, previous.digest, family, aliases)
+      : null;
+
+    const olderSlice = older.slice(0, (digPage + 1) * DIG_PAGE);
+
+    el.innerHTML = `
+      <div class="channel-hero">
+        <div class="channel-hero-top">
+          <h3 class="channel-hero-title">
+            <span class="tag channel-pill">${escapeHtml(primary)}</span>
+            channel
+          </h3>
+          <p class="modal-panel-desc" style="margin:0.35rem 0 0">
+            Pull <strong>current</strong> ${escapeHtml(primary)}, or roll back to the <strong>previous</strong> build / any older commit.
+            Registry only stores the current tag — older builds stay available via git-sha tags + digests.
+          </p>
+        </div>
+
+        <div class="channel-quick-grid">
+          <div class="channel-quick-card current">
+            <div class="channel-quick-label">Current ${escapeHtml(primary)}</div>
+            <div class="channel-quick-meta">
+              ${currentGit ? `<code class="mono-tag">${escapeHtml(currentGit.slice(0, 12))}</code>` : '<span class="muted-hint">no git tag</span>'}
+              <span class="dot">·</span>
+              <span>${escapeHtml(relativeDate(current.updatedAt || current.uploadedAt))}</span>
+            </div>
+            <div class="digest-actions" style="border:0;padding-top:0.5rem;margin-top:0.35rem">
+              <button class="btn btn-primary btn-sm" type="button" data-copy="${escapeHtml(pullCurrentTag)}">Pull :${escapeHtml(primary)}</button>
+              <button class="btn btn-outline btn-sm" type="button" data-copy="${escapeHtml(pullCurrentDigest)}">Pull digest</button>
+            </div>
+          </div>
+
+          <div class="channel-quick-card previous ${previous ? '' : 'empty'}">
+            <div class="channel-quick-label">Previous ${escapeHtml(primary)}</div>
+            ${
+              previous
+                ? `<div class="channel-quick-meta">
+                    ${prevGit ? `<code class="mono-tag">${escapeHtml(prevGit.slice(0, 12))}</code>` : '<span class="muted-hint">no git tag</span>'}
+                    <span class="dot">·</span>
+                    <span>${escapeHtml(relativeDate(previous.updatedAt || previous.uploadedAt))}</span>
+                  </div>
+                  <div class="digest-actions" style="border:0;padding-top:0.5rem;margin-top:0.35rem">
+                    <button class="btn btn-primary btn-sm" type="button" data-copy="${escapeHtml(pullPrevDigest)}">Pull previous</button>
+                    ${
+                      prevGit
+                        ? `<button class="btn btn-outline btn-sm" type="button" data-copy="${escapeHtml(
+                            generatePullCommand(location, repository, imageName, prevGit)
+                          )}">Pull :${escapeHtml(prevGit.slice(0, 12))}</button>`
+                        : ''
+                    }
+                    <button class="btn btn-outline btn-sm" type="button" data-copy="${escapeHtml(retagPrev)}">Retag ${escapeHtml(primary)} → previous</button>
+                  </div>`
+                : `<p class="muted-hint" style="margin-top:0.5rem">No older build found that isn’t owned by another channel. Load more image history or pick from “Older builds” below.</p>`
+            }
+          </div>
+        </div>
+      </div>
+
+      <div class="command-panel" style="margin-top:1rem">
+        <h4 class="panel-title">Auth (once)</h4>
+        <code class="code-block">${escapeHtml(authCmd)}</code>
+        <button class="btn btn-ghost btn-sm" type="button" data-copy="${escapeHtml(authCmd)}">Copy</button>
+      </div>
+
+      <section class="channel-section">
+        <h4 class="section-title">Current build</h4>
+        ${renderBuildCard(current, { badge: 'current', channelForRetag: null })}
+      </section>
+
+      ${
+        previous
+          ? `<section class="channel-section">
+              <h4 class="section-title">Previous build <span class="muted-hint">(suggested rollback)</span></h4>
+              ${renderBuildCard(previous, { badge: 'previous', channelForRetag: family })}
+            </section>`
+          : ''
+      }
+
+      <section class="channel-section">
+        <h4 class="section-title">Older builds <span class="count">${older.length}</span></h4>
+        <p class="modal-panel-desc">Pick any commit to pull, or retag ${escapeHtml(primary)} onto it for a full channel rollback.</p>
+        <div class="digest-list">
+          ${
+            olderSlice.length
+              ? olderSlice
+                  .map((g) => renderBuildCard(g, { badge: 'older', channelForRetag: family }))
+                  .join('')
+              : `<div class="empty-state" style="padding:1.5rem"><p>No older candidates yet — only the current ${escapeHtml(primary)} build is loaded, or other channels occupy intermediate builds.</p></div>`
+          }
+        </div>
+        ${
+          olderSlice.length < older.length
+            ? `<button class="btn btn-outline btn-sm" id="moreDigestsBtn" type="button" style="margin-top:0.75rem;width:100%">
+                Show more (${older.length - olderSlice.length} left)
+              </button>`
+            : ''
+        }
+      </section>`;
+
+    wireCopy(el);
+    el.querySelector('#moreDigestsBtn')?.addEventListener('click', () => {
+      digPage += 1;
+      renderChannelView(family);
+    });
+  }
+
+  function renderAllView() {
+    const el = els.modalBody.querySelector('#modalMainView');
+    if (!el) return;
+
+    const q = tagQuery.toLowerCase().trim();
+    let list = digestGroups;
+    if (q) {
+      list = digestGroups.filter(
+        (g) =>
+          g.tags.some((t) => t.toLowerCase().includes(q)) ||
+          (g.digest || '').toLowerCase().includes(q) ||
+          (getGitCommitFromGroup(g) || '').toLowerCase().includes(q)
+      );
+    }
+    const slice = list.slice(0, (digPage + 1) * DIG_PAGE);
+
     el.innerHTML = `
       <div class="digest-list-hint">
-        Sorted by last updated. Tags that share a <strong>commit ID (digest)</strong> point to the same image — use digest pull for a safe rollback.
+        All builds newest-first. Open a <strong>channel</strong> tab (main, bh-dev, …) to pull current / previous for that track.
       </div>
-      ${slice
-        .map((g, idx) => {
-          const when = g.updatedAt || g.uploadedAt;
-          const tagList = g.tags.length
-            ? g.tags.map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join('')
-            : '<span class="tag muted">untagged</span>';
-          const pullDigest = generatePullByDigest(location, repository, imageName, g.digest);
-          const primaryTag = g.tags[0];
-          const pullTag = primaryTag
-            ? generatePullCommand(location, repository, imageName, primaryTag)
-            : pullDigest;
-          const isNewest = idx === 0 && !tagQuery && digPage === 0;
-
-          return `
-          <article class="digest-card ${isNewest ? 'is-newest' : ''}" data-digest="${escapeHtml(g.digest || '')}">
-            <header class="digest-card-head">
-              <div class="digest-card-title">
-                ${isNewest ? '<span class="pill-live">Latest</span>' : ''}
-                <span class="digest-time" title="${escapeHtml(formatDate(when))}">
-                  ${escapeHtml(relativeDate(when))}
-                  <span class="digest-time-abs">· ${escapeHtml(formatDate(when))}</span>
-                </span>
-              </div>
-              <span class="digest-size">${escapeHtml(g.sizeFormatted || 'N/A')}</span>
-            </header>
-
-            <div class="digest-id-row">
-              <span class="digest-label">Commit ID</span>
-              <code class="digest-id" title="${escapeHtml(g.digest || '')}">${escapeHtml(g.shortDigest || '—')}<span class="digest-id-rest">${escapeHtml(
-                g.digest && g.digest.startsWith('sha256:')
-                  ? g.digest.slice(7 + 12)
-                  : ''
-              )}</span></code>
-              <button class="btn btn-ghost btn-sm" type="button" data-copy="${escapeHtml(g.digest || '')}" title="Copy full digest">Copy ID</button>
-            </div>
-
-            <div class="digest-tags-row">
-              <span class="digest-label">Tags</span>
-              <div class="digest-tags">${tagList}</div>
-            </div>
-
-            <div class="digest-actions">
-              <button class="btn btn-primary btn-sm" type="button" data-copy="${escapeHtml(pullDigest)}" title="Immutable — use for rollback">
-                Pull by commit
-              </button>
-              ${
-                primaryTag
-                  ? `<button class="btn btn-outline btn-sm" type="button" data-copy="${escapeHtml(pullTag)}" title="Tag may move later">
-                      Pull :${escapeHtml(primaryTag)}
-                    </button>`
-                  : ''
-              }
-              ${
-                g.tags.length > 1
-                  ? g.tags
-                      .slice(1, 4)
-                      .map(
-                        (t) =>
-                          `<button class="btn btn-ghost btn-sm" type="button" data-copy="${escapeHtml(
-                            generatePullCommand(location, repository, imageName, t)
-                          )}">:${escapeHtml(t)}</button>`
-                      )
-                      .join('')
-                  : ''
-              }
-            </div>
-          </article>`;
-        })
-        .join('')}
+      <div class="search-field" style="margin-bottom:0.85rem;min-width:0;width:100%;max-width:28rem">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"></circle>
+          <path d="m21 21-4.35-4.35"></path>
+        </svg>
+        <input type="search" id="modalTagSearch" class="search-input" placeholder="Search tags, git commit, digest…" autocomplete="off" value="${escapeHtml(tagQuery)}">
+      </div>
+      <div class="digest-list">
+        ${
+          slice.length
+            ? slice
+                .map((g, idx) =>
+                  renderBuildCard(g, {
+                    badge: idx === 0 && !q && digPage === 0 ? 'current' : null,
+                  })
+                )
+                .join('')
+            : `<div class="empty-state" style="padding:1.5rem"><p>No builds match</p></div>`
+        }
+      </div>
       ${
-        slice.length < all.length
+        slice.length < list.length
           ? `<button class="btn btn-outline btn-sm" id="moreDigestsBtn" type="button" style="margin-top:0.75rem;width:100%">
-              Show more (${all.length - slice.length} left)
+              Show more (${list.length - slice.length} left)
             </button>`
           : ''
       }`;
 
-    el.querySelectorAll('[data-copy]').forEach((btn) => {
-      btn.addEventListener('click', () => copyToClipboard(btn.dataset.copy));
+    wireCopy(el);
+    el.querySelector('#modalTagSearch')?.addEventListener('input', (e) => {
+      tagQuery = e.target.value;
+      digPage = 0;
+      renderAllView();
     });
     el.querySelector('#moreDigestsBtn')?.addEventListener('click', () => {
       digPage += 1;
-      renderDigestList();
+      renderAllView();
     });
+  }
+
+  function renderActive() {
+    digPage = 0;
+    if (activeView === 'all') renderAllView();
+    else renderChannelView(activeView);
+  }
+
+  function setActiveTab(view) {
+    activeView = view;
+    tagQuery = '';
+    els.modalBody.querySelectorAll('.channel-tab').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.view === view);
+    });
+    renderActive();
+  }
+
+  const channelTabs = [
+    { view: 'all', label: 'All builds' },
+    ...channels.map((c) => ({ view: c.family, label: c.primaryTag || c.family })),
+  ];
+
+  // Default to first channel if any (bh-dev / main), else all
+  if (channels.length) {
+    // Prefer common channel names
+    const preferred = ['bh-dev', 'main', 'dev', 'prod', 'staging'];
+    activeView =
+      preferred.find((p) => channels.some((c) => c.family === p)) || channels[0].family;
+  } else {
+    activeView = 'all';
   }
 
   els.modalBody.innerHTML = `
     <div class="modal-grid">
-      <div class="modal-panel modal-span-2">
-        <h3>Rollback-safe pull</h3>
-        <p class="modal-panel-desc">
-          Tags can be reassigned. The <strong>commit ID</strong> (image digest) never moves — use it when multiple tags share the same update time.
+      <div class="modal-panel modal-span-2 channel-tabs-wrap">
+        <div class="channel-tabs" role="tablist" aria-label="Channels">
+          ${channelTabs
+            .map(
+              (t) => `
+            <button type="button" class="channel-tab ${t.view === activeView ? 'active' : ''}" data-view="${escapeHtml(t.view)}" role="tab">
+              ${escapeHtml(t.label)}
+            </button>`
+            )
+            .join('')}
+        </div>
+        <p class="modal-panel-desc" style="margin-top:0.75rem;margin-bottom:0">
+          Use <strong>main</strong> / <strong>bh-dev</strong> tabs for “current vs previous” on that channel. Git-sha tags stay on old builds for rollback.
         </p>
-        <div class="command-step">
-          <span class="step-num">1</span>
-          <div class="step-body">
-            <p>Authenticate with Artifact Registry</p>
-            <code class="code-block">${escapeHtml(authCmd)}</code>
-            <button class="btn btn-outline btn-sm" type="button" data-copy="${escapeHtml(authCmd)}">Copy</button>
-          </div>
-        </div>
-        <div class="command-step" style="margin-top:0.85rem">
-          <span class="step-num">2</span>
-          <div class="step-body">
-            <p>
-              Newest commit
-              ${newest?.shortDigest ? `<span class="tag mono-tag">${escapeHtml(newest.shortDigest)}</span>` : ''}
-              ${defaultTag ? `· tag <span class="tag">${escapeHtml(defaultTag)}</span>` : ''}
-            </p>
-            <code class="code-block">${escapeHtml(defaultDigestPull)}</code>
-            <button class="btn btn-outline btn-sm" type="button" data-copy="${escapeHtml(defaultDigestPull)}">Copy digest pull</button>
-            <button class="btn btn-ghost btn-sm" type="button" data-copy="${escapeHtml(defaultPull)}">Copy tag pull</button>
-          </div>
-        </div>
       </div>
-
-      <div class="modal-panel modal-span-2">
-        <h3>
-          Tags by update time
-          <span class="count">${digestGroups.length} commits · ${allTagNames.length} tags</span>
-        </h3>
-        <div class="search-field tag-search-row" style="margin-bottom:0.85rem;min-width:0;width:100%;max-width:28rem">
-          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="11" cy="11" r="8"></circle>
-            <path d="m21 21-4.35-4.35"></path>
-          </svg>
-          <input type="search" id="modalTagSearch" class="search-input" placeholder="Search tags or commit ID…" autocomplete="off">
-        </div>
-        <div id="modalDigestList" class="digest-list"></div>
-      </div>
+      <div class="modal-panel modal-span-2" id="modalMainView"></div>
     </div>`;
 
-  els.modalBody.querySelectorAll(':scope > .modal-grid > .modal-panel [data-copy]').forEach((btn) => {
-    btn.addEventListener('click', () => copyToClipboard(btn.dataset.copy));
+  els.modalBody.querySelectorAll('.channel-tab').forEach((btn) => {
+    btn.addEventListener('click', () => setActiveTab(btn.dataset.view));
   });
 
-  const tagSearch = els.modalBody.querySelector('#modalTagSearch');
-  tagSearch?.addEventListener('input', (e) => {
-    tagQuery = e.target.value;
-    digPage = 0;
-    renderDigestList();
-  });
-
-  renderDigestList();
+  renderActive();
   showModal();
-  setTimeout(() => tagSearch?.focus(), 50);
 }
 
 function showModal() {
