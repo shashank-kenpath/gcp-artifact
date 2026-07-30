@@ -1283,6 +1283,165 @@ a.crumb:hover {
   padding: 0;
 }
 
+/* Digest / commit rollback cards */
+.modal-panel-desc {
+  font-size: 0.82rem;
+  color: var(--muted-foreground);
+  line-height: 1.5;
+  margin: -0.35rem 0 1rem;
+}
+
+.digest-list-hint {
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+  line-height: 1.45;
+  margin-bottom: 0.85rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: calc(var(--radius) - 2px);
+  border: 1px solid var(--border);
+  background: var(--muted);
+}
+
+.digest-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.digest-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card-elevated);
+  padding: 0.85rem 1rem;
+  transition: border-color 0.15s;
+}
+
+.digest-card:hover {
+  border-color: #3f3f46;
+}
+
+.digest-card.is-newest {
+  border-color: rgba(52, 211, 153, 0.35);
+  box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.08);
+}
+
+.digest-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.65rem;
+}
+
+.digest-card-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.pill-live {
+  display: inline-flex;
+  align-items: center;
+  height: 1.25rem;
+  padding: 0 0.45rem;
+  border-radius: 999px;
+  font-size: 0.65rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--success-dim);
+  color: var(--success);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+}
+
+.digest-time {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--foreground);
+}
+
+.digest-time-abs {
+  color: var(--muted-foreground);
+  font-weight: 400;
+  font-size: 0.75rem;
+}
+
+.digest-size {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.digest-id-row,
+.digest-tags-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  margin-bottom: 0.55rem;
+}
+
+.digest-label {
+  flex-shrink: 0;
+  width: 4.5rem;
+  padding-top: 0.2rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+}
+
+.digest-id {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  color: var(--success);
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 4px);
+  padding: 0.3rem 0.55rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.digest-id-rest {
+  color: var(--muted-foreground);
+  opacity: 0.55;
+}
+
+.digest-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.digest-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--border);
+}
+
+.mono-tag {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+}
+
+.mono-meta {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--success);
+}
+
 .variant-item {
   padding: 0.65rem 0.75rem;
   border-left: 2px solid var(--success);

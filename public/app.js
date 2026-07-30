@@ -225,12 +225,14 @@ function groupDockerImages(images) {
     groups[baseName].variants.push(image);
     (image.tags || []).forEach((t) => groups[baseName].allTags.add(t));
     groups[baseName].totalSize += image.sizeBytes || 0;
-    const uploadDate = image.uploadedAt ? new Date(image.uploadedAt) : null;
+    // Prefer update time when ranking "latest"
+    const sortAt = image.updatedAt || image.uploadedAt;
+    const sortDate = sortAt ? new Date(sortAt) : null;
     if (
-      uploadDate &&
-      (!groups[baseName].latestUpload || uploadDate > new Date(groups[baseName].latestUpload))
+      sortDate &&
+      (!groups[baseName].latestUpload || sortDate > new Date(groups[baseName].latestUpload))
     ) {
-      groups[baseName].latestUpload = image.uploadedAt;
+      groups[baseName].latestUpload = sortAt;
     }
   });
 
@@ -243,10 +245,79 @@ function groupDockerImages(images) {
     });
 }
 
+/**
+ * Flatten variants into per-tag rows with digest + timestamps,
+ * then group by digest so tags at the same commit/image are one rollback unit.
+ * Sorted by update time (newest first).
+ */
+function buildTagDigestGroups(variants) {
+  const byDigest = new Map();
+
+  variants.forEach((v) => {
+    const digest = v.digest || extractDigestFromUri(v.uri || v.id || v.name) || `unknown-${v.id || Math.random()}`;
+    const shortDigest = v.shortDigest || (digest.startsWith('sha256:') ? digest.slice(7, 19) : digest.slice(0, 12));
+    const updatedAt = v.updatedAt || v.uploadedAt || null;
+    const tags = v.tags?.length ? v.tags : [];
+
+    if (!byDigest.has(digest)) {
+      byDigest.set(digest, {
+        digest,
+        shortDigest,
+        uri: v.uri || null,
+        tags: [],
+        uploadedAt: v.uploadedAt || null,
+        updatedAt,
+        buildTime: v.buildTime || null,
+        sizeBytes: v.sizeBytes || 0,
+        sizeFormatted: v.sizeFormatted || formatSize(v.sizeBytes || 0),
+        mediaType: v.mediaType || '',
+      });
+    }
+
+    const entry = byDigest.get(digest);
+    tags.forEach((t) => {
+      if (!entry.tags.includes(t)) entry.tags.push(t);
+    });
+    // Keep the newest timestamps on the group
+    if (updatedAt && (!entry.updatedAt || new Date(updatedAt) > new Date(entry.updatedAt))) {
+      entry.updatedAt = updatedAt;
+    }
+    if (v.uploadedAt && (!entry.uploadedAt || new Date(v.uploadedAt) > new Date(entry.uploadedAt))) {
+      entry.uploadedAt = v.uploadedAt;
+    }
+    if ((v.sizeBytes || 0) > (entry.sizeBytes || 0)) {
+      entry.sizeBytes = v.sizeBytes;
+      entry.sizeFormatted = v.sizeFormatted || formatSize(v.sizeBytes);
+    }
+  });
+
+  return Array.from(byDigest.values()).sort((a, b) => {
+    const ta = new Date(a.updatedAt || a.uploadedAt || 0).getTime();
+    const tb = new Date(b.updatedAt || b.uploadedAt || 0).getTime();
+    if (tb !== ta) return tb - ta;
+    // Stable secondary: digest string
+    return (a.digest || '').localeCompare(b.digest || '');
+  });
+}
+
+function extractDigestFromUri(uri) {
+  if (!uri) return null;
+  const m = String(uri).match(/sha256:[a-fA-F0-9]+/);
+  return m ? m[0].toLowerCase() : null;
+}
+
 function generatePullCommand(location, repository, imageName, tag) {
   const projectId = credentials?.project_id || 'PROJECT_ID';
   const tagSuffix = tag ? `:${tag}` : ':latest';
   return `docker pull ${location}-docker.pkg.dev/${projectId}/${repository}/${imageName}${tagSuffix}`;
+}
+
+/** Immutable pull — preferred for rollback (tag may move later). */
+function generatePullByDigest(location, repository, imageName, digest) {
+  const projectId = credentials?.project_id || 'PROJECT_ID';
+  const d = digest && digest.startsWith('sha256:') ? digest : digest ? `sha256:${digest}` : '';
+  if (!d) return generatePullCommand(location, repository, imageName, 'latest');
+  return `docker pull ${location}-docker.pkg.dev/${projectId}/${repository}/${imageName}@${d}`;
 }
 
 function syncSearchClear(inputId) {
@@ -830,6 +901,8 @@ function renderTimeline() {
             .map((group) => {
               const tags = group.allTags || [];
               const visible = tags.slice(0, 5);
+              const digests = buildTagDigestGroups(group.variants);
+              const latestDig = digests[0];
               return `
               <article class="artifact-row" data-image="${escapeHtml(group.name)}">
                 <div class="artifact-main" role="button" tabindex="0">
@@ -855,11 +928,16 @@ function renderTimeline() {
                       ${tags.length > 5 ? `<span class="tag more">+${tags.length - 5}</span>` : ''}
                     </div>
                     <div class="artifact-meta-row">
-                      <span>${group.variants.length} variant${group.variants.length === 1 ? '' : 's'}</span>
-                      <span class="dot">·</span>
-                      <span>${escapeHtml(formatSize(group.totalSize))}</span>
+                      <span>${digests.length} commit${digests.length === 1 ? '' : 's'}</span>
                       <span class="dot">·</span>
                       <span>${tags.length} tag${tags.length === 1 ? '' : 's'}</span>
+                      ${
+                        latestDig?.shortDigest
+                          ? `<span class="dot">·</span><span class="mono-meta" title="${escapeHtml(latestDig.digest || '')}">${escapeHtml(latestDig.shortDigest)}</span>`
+                          : ''
+                      }
+                      <span class="dot">·</span>
+                      <span>${escapeHtml(formatSize(group.totalSize))}</span>
                     </div>
                   </div>
                   <div class="artifact-chevron">
@@ -934,107 +1012,147 @@ function openImageModal(imageName) {
 
   const location = repoDetail.location;
   const repository = repoDetail.name;
-  const tags = group.allTags.length ? group.allTags : ['latest'];
-  const sortedTags = [...tags].sort((a, b) => {
-    if (a === 'latest') return -1;
-    if (b === 'latest') return 1;
-    return a.localeCompare(b, undefined, { numeric: true });
-  });
 
-  const variants = [...group.variants].sort(
-    (a, b) => new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0)
-  );
+  // Digest groups sorted by update time — one group = one rollback commit
+  const digestGroups = buildTagDigestGroups(group.variants);
+  const allTagNames = digestGroups.flatMap((g) => g.tags);
+  const newest = digestGroups[0];
+  const defaultTag = newest?.tags?.[0] || allTagNames[0] || 'latest';
 
   const authCmd = `gcloud auth configure-docker ${location}-docker.pkg.dev --quiet`;
-  const defaultPull = generatePullCommand(location, repository, imageName, sortedTags[0]);
+  const defaultPull = generatePullCommand(location, repository, imageName, defaultTag);
+  const defaultDigestPull = newest?.digest
+    ? generatePullByDigest(location, repository, imageName, newest.digest)
+    : defaultPull;
 
   let tagQuery = '';
-  let tagPage = 0;
-  let varPage = 0;
-  const TAG_PAGE = 24;
-  const VAR_PAGE = 12;
+  let digPage = 0;
+  const DIG_PAGE = 12;
 
   els.modalTitle.textContent = imageName;
   els.modalSubtitle.textContent = `${repository} · ${location}`;
-  els.modalBadge.textContent = `${sortedTags.length} tags · ${variants.length} variants`;
+  els.modalBadge.textContent = `${allTagNames.length} tags · ${digestGroups.length} commits`;
   els.modalBadge.className = 'badge docker';
 
-  function filteredTags() {
+  function filteredDigestGroups() {
     const q = tagQuery.toLowerCase().trim();
-    if (!q) return sortedTags;
-    return sortedTags.filter((t) => t.toLowerCase().includes(q));
+    if (!q) return digestGroups;
+    return digestGroups.filter(
+      (g) =>
+        g.tags.some((t) => t.toLowerCase().includes(q)) ||
+        (g.digest || '').toLowerCase().includes(q) ||
+        (g.shortDigest || '').toLowerCase().includes(q)
+    );
   }
 
-  function renderTags() {
-    const all = filteredTags();
-    const slice = all.slice(0, (tagPage + 1) * TAG_PAGE);
-    const el = els.modalBody.querySelector('#modalTags');
+  function renderDigestList() {
+    const all = filteredDigestGroups();
+    const slice = all.slice(0, (digPage + 1) * DIG_PAGE);
+    const el = els.modalBody.querySelector('#modalDigestList');
     if (!el) return;
 
     if (!all.length) {
-      el.innerHTML = `<div class="empty-state" style="padding:1.5rem"><p>No tags match “${escapeHtml(tagQuery)}”</p></div>`;
+      el.innerHTML = `<div class="empty-state" style="padding:1.5rem"><p>No tags or digests match “${escapeHtml(tagQuery)}”</p></div>`;
       return;
     }
 
     el.innerHTML = `
+      <div class="digest-list-hint">
+        Sorted by last updated. Tags that share a <strong>commit ID (digest)</strong> point to the same image — use digest pull for a safe rollback.
+      </div>
       ${slice
-        .map((tag) => {
-          const pull = generatePullCommand(location, repository, imageName, tag);
+        .map((g, idx) => {
+          const when = g.updatedAt || g.uploadedAt;
+          const tagList = g.tags.length
+            ? g.tags.map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join('')
+            : '<span class="tag muted">untagged</span>';
+          const pullDigest = generatePullByDigest(location, repository, imageName, g.digest);
+          const primaryTag = g.tags[0];
+          const pullTag = primaryTag
+            ? generatePullCommand(location, repository, imageName, primaryTag)
+            : pullDigest;
+          const isNewest = idx === 0 && !tagQuery && digPage === 0;
+
           return `
-          <div class="tag-row">
-            <code>${escapeHtml(tag)}</code>
-            <button class="btn btn-outline btn-sm copy-pull" type="button" data-cmd="${escapeHtml(pull)}">Copy pull</button>
-          </div>`;
+          <article class="digest-card ${isNewest ? 'is-newest' : ''}" data-digest="${escapeHtml(g.digest || '')}">
+            <header class="digest-card-head">
+              <div class="digest-card-title">
+                ${isNewest ? '<span class="pill-live">Latest</span>' : ''}
+                <span class="digest-time" title="${escapeHtml(formatDate(when))}">
+                  ${escapeHtml(relativeDate(when))}
+                  <span class="digest-time-abs">· ${escapeHtml(formatDate(when))}</span>
+                </span>
+              </div>
+              <span class="digest-size">${escapeHtml(g.sizeFormatted || 'N/A')}</span>
+            </header>
+
+            <div class="digest-id-row">
+              <span class="digest-label">Commit ID</span>
+              <code class="digest-id" title="${escapeHtml(g.digest || '')}">${escapeHtml(g.shortDigest || '—')}<span class="digest-id-rest">${escapeHtml(
+                g.digest && g.digest.startsWith('sha256:')
+                  ? g.digest.slice(7 + 12)
+                  : ''
+              )}</span></code>
+              <button class="btn btn-ghost btn-sm" type="button" data-copy="${escapeHtml(g.digest || '')}" title="Copy full digest">Copy ID</button>
+            </div>
+
+            <div class="digest-tags-row">
+              <span class="digest-label">Tags</span>
+              <div class="digest-tags">${tagList}</div>
+            </div>
+
+            <div class="digest-actions">
+              <button class="btn btn-primary btn-sm" type="button" data-copy="${escapeHtml(pullDigest)}" title="Immutable — use for rollback">
+                Pull by commit
+              </button>
+              ${
+                primaryTag
+                  ? `<button class="btn btn-outline btn-sm" type="button" data-copy="${escapeHtml(pullTag)}" title="Tag may move later">
+                      Pull :${escapeHtml(primaryTag)}
+                    </button>`
+                  : ''
+              }
+              ${
+                g.tags.length > 1
+                  ? g.tags
+                      .slice(1, 4)
+                      .map(
+                        (t) =>
+                          `<button class="btn btn-ghost btn-sm" type="button" data-copy="${escapeHtml(
+                            generatePullCommand(location, repository, imageName, t)
+                          )}">:${escapeHtml(t)}</button>`
+                      )
+                      .join('')
+                  : ''
+              }
+            </div>
+          </article>`;
         })
         .join('')}
       ${
         slice.length < all.length
-          ? `<button class="btn btn-ghost btn-sm" id="moreTagsBtn" type="button" style="margin-top:0.5rem">
+          ? `<button class="btn btn-outline btn-sm" id="moreDigestsBtn" type="button" style="margin-top:0.75rem;width:100%">
               Show more (${all.length - slice.length} left)
             </button>`
           : ''
       }`;
 
-    el.querySelectorAll('.copy-pull').forEach((btn) => {
-      btn.addEventListener('click', () => copyToClipboard(btn.dataset.cmd));
+    el.querySelectorAll('[data-copy]').forEach((btn) => {
+      btn.addEventListener('click', () => copyToClipboard(btn.dataset.copy));
     });
-    el.querySelector('#moreTagsBtn')?.addEventListener('click', () => {
-      tagPage += 1;
-      renderTags();
-    });
-  }
-
-  function renderVariants() {
-    const slice = variants.slice(0, (varPage + 1) * VAR_PAGE);
-    const el = els.modalBody.querySelector('#modalVariants');
-    if (!el) return;
-    el.innerHTML = `
-      ${slice
-        .map(
-          (v) => `
-        <div class="variant-item">
-          <div class="variant-info">
-            <span class="variant-tags">${escapeHtml((v.tags || []).join(', ') || 'untagged')}</span>
-            <span class="variant-meta">${escapeHtml(v.sizeFormatted)} · ${escapeHtml(relativeDate(v.uploadedAt))} · ${escapeHtml(formatDate(v.uploadedAt))}</span>
-          </div>
-        </div>`
-        )
-        .join('')}
-      ${
-        slice.length < variants.length
-          ? `<button class="btn btn-ghost btn-sm" id="moreVarsBtn" type="button" style="margin-top:0.5rem">Show more variants</button>`
-          : ''
-      }`;
-    el.querySelector('#moreVarsBtn')?.addEventListener('click', () => {
-      varPage += 1;
-      renderVariants();
+    el.querySelector('#moreDigestsBtn')?.addEventListener('click', () => {
+      digPage += 1;
+      renderDigestList();
     });
   }
 
   els.modalBody.innerHTML = `
     <div class="modal-grid">
       <div class="modal-panel modal-span-2">
-        <h3>Pull commands</h3>
+        <h3>Rollback-safe pull</h3>
+        <p class="modal-panel-desc">
+          Tags can be reassigned. The <strong>commit ID</strong> (image digest) never moves — use it when multiple tags share the same update time.
+        </p>
         <div class="command-step">
           <span class="step-num">1</span>
           <div class="step-body">
@@ -1046,44 +1164,46 @@ function openImageModal(imageName) {
         <div class="command-step" style="margin-top:0.85rem">
           <span class="step-num">2</span>
           <div class="step-body">
-            <p>Pull default tag <span class="tag">${escapeHtml(sortedTags[0])}</span></p>
-            <code class="code-block">${escapeHtml(defaultPull)}</code>
-            <button class="btn btn-outline btn-sm" type="button" data-copy="${escapeHtml(defaultPull)}">Copy</button>
+            <p>
+              Newest commit
+              ${newest?.shortDigest ? `<span class="tag mono-tag">${escapeHtml(newest.shortDigest)}</span>` : ''}
+              ${defaultTag ? `· tag <span class="tag">${escapeHtml(defaultTag)}</span>` : ''}
+            </p>
+            <code class="code-block">${escapeHtml(defaultDigestPull)}</code>
+            <button class="btn btn-outline btn-sm" type="button" data-copy="${escapeHtml(defaultDigestPull)}">Copy digest pull</button>
+            <button class="btn btn-ghost btn-sm" type="button" data-copy="${escapeHtml(defaultPull)}">Copy tag pull</button>
           </div>
         </div>
       </div>
 
-      <div class="modal-panel">
-        <h3>Tags <span class="count">${sortedTags.length}</span></h3>
-        <div class="search-field tag-search-row" style="margin-bottom:0.75rem;min-width:0;width:100%">
+      <div class="modal-panel modal-span-2">
+        <h3>
+          Tags by update time
+          <span class="count">${digestGroups.length} commits · ${allTagNames.length} tags</span>
+        </h3>
+        <div class="search-field tag-search-row" style="margin-bottom:0.85rem;min-width:0;width:100%;max-width:28rem">
           <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="11" cy="11" r="8"></circle>
             <path d="m21 21-4.35-4.35"></path>
           </svg>
-          <input type="search" id="modalTagSearch" class="search-input" placeholder="Search tags…" autocomplete="off">
+          <input type="search" id="modalTagSearch" class="search-input" placeholder="Search tags or commit ID…" autocomplete="off">
         </div>
-        <div id="modalTags"></div>
-      </div>
-
-      <div class="modal-panel">
-        <h3>Variants by time <span class="count">${variants.length} loaded</span></h3>
-        <div id="modalVariants"></div>
+        <div id="modalDigestList" class="digest-list"></div>
       </div>
     </div>`;
 
-  els.modalBody.querySelectorAll('[data-copy]').forEach((btn) => {
+  els.modalBody.querySelectorAll(':scope > .modal-grid > .modal-panel [data-copy]').forEach((btn) => {
     btn.addEventListener('click', () => copyToClipboard(btn.dataset.copy));
   });
 
   const tagSearch = els.modalBody.querySelector('#modalTagSearch');
   tagSearch?.addEventListener('input', (e) => {
     tagQuery = e.target.value;
-    tagPage = 0;
-    renderTags();
+    digPage = 0;
+    renderDigestList();
   });
 
-  renderTags();
-  renderVariants();
+  renderDigestList();
   showModal();
   setTimeout(() => tagSearch?.focus(), 50);
 }

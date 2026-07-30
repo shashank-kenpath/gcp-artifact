@@ -130,16 +130,32 @@ function formatVersion(version) {
   };
 }
 
+/** Extract immutable image digest (sha256:…) for rollback identity. */
+function extractDigest(image) {
+  const sources = [image.uri, image.name].filter(Boolean);
+  for (const src of sources) {
+    const match = String(src).match(/sha256:[a-fA-F0-9]+/);
+    if (match) return match[0].toLowerCase();
+  }
+  return null;
+}
+
 function formatDockerImage(image) {
   const nameParts = image.name.split('/');
+  const digest = extractDigest(image);
   return {
     id: image.name,
     name: nameParts.slice(-2).join('/'),
     uri: image.uri,
     tags: image.tags || [],
+    digest,
+    // Short form for UI (first 12 hex chars after sha256:)
+    shortDigest: digest ? digest.replace(/^sha256:/, '').slice(0, 12) : null,
     sizeBytes: image.imageSizeBytes ? Number(image.imageSizeBytes) : 0,
     sizeFormatted: formatSize(image.imageSizeBytes ? Number(image.imageSizeBytes) : 0),
     uploadedAt: formatDate(image.uploadTime),
+    // Prefer update_time for “when this tag/image last changed”
+    updatedAt: formatDate(image.updateTime) || formatDate(image.uploadTime),
     buildTime: formatDate(image.buildTime),
     mediaType: image.mediaType || '',
   };
