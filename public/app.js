@@ -1344,26 +1344,27 @@ function openImageModal(imageName) {
           : ''
       }
 
-      <section class="channel-section">
-        <h4 class="section-title">Older builds <span class="count">${older.length}</span></h4>
-        <p class="modal-panel-desc">Pick any commit to pull, or retag ${escapeHtml(primary)} onto it for a full channel rollback.</p>
-        <div class="digest-list">
-          ${
-            olderSlice.length
-              ? olderSlice
-                  .map((g) => renderBuildCard(g, { badge: 'older', channelForRetag: family }))
-                  .join('')
-              : `<div class="empty-state" style="padding:1.5rem"><p>No older candidates yet — only the current ${escapeHtml(primary)} build is loaded, or other channels occupy intermediate builds.</p></div>`
-          }
-        </div>
-        ${
-          olderSlice.length < older.length
-            ? `<button class="btn btn-outline btn-sm" id="moreDigestsBtn" type="button" style="margin-top:0.75rem;width:100%">
-                Show more (${older.length - olderSlice.length} left)
-              </button>`
-            : ''
-        }
-      </section>`;
+      ${
+        older.length
+          ? `<section class="channel-section">
+              <h4 class="section-title">Older builds <span class="count">${older.length}</span></h4>
+              <p class="modal-panel-desc">Pick any commit to pull, or retag ${escapeHtml(primary)} onto it for a full channel rollback.</p>
+              <div class="digest-list">
+                ${olderSlice.map((g) => renderBuildCard(g, { badge: 'older', channelForRetag: family })).join('')}
+              </div>
+              ${
+                olderSlice.length < older.length
+                  ? `<button class="btn btn-outline btn-sm" id="moreDigestsBtn" type="button" style="margin-top:0.75rem;width:100%">
+                      Show more (${older.length - olderSlice.length} left)
+                    </button>`
+                  : ''
+              }
+            </section>`
+          : `<section class="channel-section">
+              <h4 class="section-title">Older builds <span class="count">0</span></h4>
+              <p class="muted-hint">No older builds yet — pull an older commit from “All builds”, or load more image history.</p>
+            </section>`
+      }`;
 
     wireCopy(el);
     el.querySelector('#moreDigestsBtn')?.addEventListener('click', () => {
@@ -1442,7 +1443,9 @@ function openImageModal(imageName) {
     activeView = view;
     tagQuery = '';
     els.modalBody.querySelectorAll('.channel-tab').forEach((btn) => {
-      btn.classList.toggle('active', btn.dataset.view === view);
+      const selected = btn.dataset.view === view;
+      btn.classList.toggle('active', selected);
+      btn.setAttribute('aria-selected', String(selected));
     });
     renderActive();
   }
@@ -1469,7 +1472,7 @@ function openImageModal(imageName) {
           ${channelTabs
             .map(
               (t) => `
-            <button type="button" class="channel-tab ${t.view === activeView ? 'active' : ''}" data-view="${escapeHtml(t.view)}" role="tab">
+            <button type="button" class="channel-tab ${t.view === activeView ? 'active' : ''}" data-view="${escapeHtml(t.view)}" role="tab" aria-selected="${t.view === activeView ? 'true' : 'false'}">
               ${escapeHtml(t.label)}
             </button>`
             )
@@ -1490,10 +1493,14 @@ function openImageModal(imageName) {
   showModal();
 }
 
+let modalOpener = null;
+
 function showModal() {
+  modalOpener = document.activeElement instanceof Element ? document.activeElement : null;
   els.imageModal.classList.remove('hidden');
   els.imageModal.setAttribute('aria-hidden', 'false');
   document.body.classList.add('modal-open');
+  els.modalClose?.focus();
 }
 
 function closeModal() {
@@ -1501,6 +1508,8 @@ function closeModal() {
   els.imageModal.classList.add('hidden');
   els.imageModal.setAttribute('aria-hidden', 'true');
   document.body.classList.remove('modal-open');
+  if (modalOpener?.isConnected) modalOpener.focus();
+  modalOpener = null;
 }
 
 // ─── Command palette ────────────────────────────────────────────────────────
@@ -1974,10 +1983,34 @@ function logout() {
 }
 
 function copyToClipboard(text) {
-  navigator.clipboard.writeText(text).then(
-    () => showToast('Copied to clipboard'),
-    () => showToast('Failed to copy')
-  );
+  const report = (ok) => showToast(ok ? 'Copied to clipboard' : 'Failed to copy');
+  // navigator.clipboard is unavailable on non-secure origins (plain-HTTP VM deployments)
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(
+      () => report(true),
+      () => report(legacyCopy(text))
+    );
+    return;
+  }
+  report(legacyCopy(text));
+}
+
+function legacyCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch {
+    ok = false;
+  }
+  ta.remove();
+  return ok;
 }
 
 // ─── Events ─────────────────────────────────────────────────────────────────
@@ -2050,6 +2083,22 @@ function initEventListeners() {
   // Full-screen modal
   els.modalClose?.addEventListener('click', closeModal);
   els.modalScrim?.addEventListener('click', closeModal);
+  // Keep Tab inside the dialog while aria-modal is advertised
+  els.imageModal?.addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab') return;
+    const focusables = [...els.imageModal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+      .filter((el) => !el.disabled && el.getBoundingClientRect().width > 0);
+    if (!focusables.length) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  });
 
   // Command palette
   els.cmdOpenBtn?.addEventListener('click', openCmdPalette);
