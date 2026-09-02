@@ -5,6 +5,7 @@ node_modules/
 *.json
 !package.json
 !package-lock.json
+!.hoplite/settings.json
 gcp-creds.json
 *-creds.json
 *-credentials.json
